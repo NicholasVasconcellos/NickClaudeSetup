@@ -2,11 +2,11 @@
 
 Sharing my personal setup with claude code for autonomous test driven development, with full control. Go from a plan to final working product.
 
-Credit to: https://x.com/mattpocockuk for similar setup inspiring this one
+I start with the `plan.md`, then have the work in progress with two commands.
 
-## I start with the `plan.md`, then have the work in progress with two commands.
+_Credit to: https://x.com/mattpocockuk for similar setup inspiring this one_
 
-## Quick Start
+## How to use
 
 ### 1. Write your plan
 
