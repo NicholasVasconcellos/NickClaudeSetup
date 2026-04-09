@@ -8,6 +8,7 @@ interface TaskData {
   title?: string;
   phase?: string;
   cost?: number;
+  contextPercentage?: number;
 }
 
 interface TaskGraphProps {
@@ -183,6 +184,7 @@ export default function TaskGraph({
                   state={task.state}
                   phase={task.phase}
                   cost={task.cost}
+                  contextPercentage={task.contextPercentage}
                   onClick={() => onSelectTask?.(taskId)}
                 />
               </div>

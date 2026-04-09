@@ -386,7 +386,10 @@ function emitAgent(bus: EventBus, taskId: number, phase: TaskPhase): void {
   const tokensIn = randInt(1200, 6000);
   const tokensOut = randInt(800, 4000);
   const cost = fakeCost(tokensIn, tokensOut);
-  bus.agentFinished(taskId, phase, tokensIn + tokensOut, cost);
+  const model = "claude-sonnet-4-6";
+  const contextLimit = 200_000;
+  const contextPercentage = Math.min(100, ((tokensIn + tokensOut) / contextLimit) * 100);
+  bus.agentFinished(taskId, phase, tokensIn + tokensOut, cost, tokensIn, tokensOut, model, contextLimit, contextPercentage);
   totalTokensIn += tokensIn;
   totalTokensOut += tokensOut;
   totalCost += cost;

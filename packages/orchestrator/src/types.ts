@@ -1,3 +1,13 @@
+// ── Context Window Limits ────────────────────────────────────
+
+export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  "claude-sonnet-4-6": 200_000,
+  "claude-opus-4-6": 1_000_000,
+  "claude-haiku-4-5-20251001": 200_000,
+};
+
+export const DEFAULT_CONTEXT_LIMIT = 200_000;
+
 // ── Task States ──────────────────────────────────────────────
 
 export type TaskState =
@@ -131,7 +141,7 @@ export type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: TaskState; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
-  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number }
+  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "task:unblocked"; taskId: number }
   | { type: "run:completed"; summary: RunSummary }
   | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };

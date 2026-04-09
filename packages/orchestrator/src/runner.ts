@@ -16,6 +16,7 @@ import type {
   RunSummary,
   WSEventFromClient,
 } from "./types.js";
+import { MODEL_CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT } from "./types.js";
 
 // ── Runner ────────────────────────────────────────────────────
 
@@ -322,7 +323,13 @@ export class Runner {
     });
 
     this.db.finishAgentRun(runId, result.tokensIn, result.tokensOut, result.cost, result.duration);
-    this.events.agentFinished(taskId, phase, result.tokensIn + result.tokensOut, result.cost);
+    const contextLimit = MODEL_CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT;
+    const tokensUsed = result.tokensIn + result.tokensOut;
+    const contextPercentage = Math.min(100, (tokensUsed / contextLimit) * 100);
+    this.events.agentFinished(
+      taskId, phase, tokensUsed, result.cost,
+      result.tokensIn, result.tokensOut, model, contextLimit, contextPercentage,
+    );
 
     if (result.exitCode !== 0 && !signal.aborted) {
       throw new Error(`${phase} phase failed (exit ${result.exitCode}): ${result.stderr}`);
@@ -537,11 +544,12 @@ export class Runner {
       result.cost,
       result.duration
     );
+    const mergeContextLimit = MODEL_CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT;
+    const mergeTokensUsed = result.tokensIn + result.tokensOut;
+    const mergeContextPct = Math.min(100, (mergeTokensUsed / mergeContextLimit) * 100);
     this.events.agentFinished(
-      taskId,
-      phase,
-      result.tokensIn + result.tokensOut,
-      result.cost
+      taskId, phase, mergeTokensUsed, result.cost,
+      result.tokensIn, result.tokensOut, model, mergeContextLimit, mergeContextPct,
     );
 
     if (result.exitCode !== 0) {

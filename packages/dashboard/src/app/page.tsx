@@ -15,13 +15,14 @@ export default function DashboardPage() {
   const [paused, setPaused] = useState(false);
 
   const taskGraphData = useMemo(() => {
-    const data = new Map<number, { state: string; title?: string; phase?: string; cost?: number }>();
+    const data = new Map<number, { state: string; title?: string; phase?: string; cost?: number; contextPercentage?: number }>();
     tasks.forEach((info, id) => {
       data.set(id, {
         state: info.state,
         title: info.title,
         phase: info.phase,
         cost: info.cost,
+        contextPercentage: info.contextRollup?.peakPercentage,
       });
     });
     return data;
@@ -43,6 +44,16 @@ export default function DashboardPage() {
     const m = new Map<number, number>();
     tasks.forEach((info, id) => {
       if (info.cost > 0) m.set(id, info.cost);
+    });
+    return m;
+  }, [tasks]);
+
+  const taskContextData = useMemo(() => {
+    const m = new Map<number, { peakPercentage: number; totalTokensUsed: number }>();
+    tasks.forEach((info, id) => {
+      if (info.contextRollup && info.contextRollup.peakPercentage > 0) {
+        m.set(id, info.contextRollup);
+      }
     });
     return m;
   }, [tasks]);
@@ -222,6 +233,7 @@ export default function DashboardPage() {
             tokensIn={costs.totalTokensIn}
             tokensOut={costs.totalTokensOut}
             taskCosts={taskCosts}
+            taskContextData={taskContextData}
           />
           <Controls
             selectedTaskId={selectedTaskId}

@@ -21,7 +21,7 @@ type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: string; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
-  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number }
+  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "layer:started"; layerIndex: number; taskIds: number[] }
   | { type: "layer:completed"; layerIndex: number }
   | { type: "run:completed"; summary: RunSummary };
@@ -48,6 +48,14 @@ type WSEventFromClient =
   | { type: "command:retry_task"; taskId: number }
   | { type: "command:skip_task"; taskId: number };
 
+export interface PhaseContextInfo {
+  phase: string;
+  model: string;
+  tokensUsed: number;
+  contextLimit: number;
+  contextPercentage: number;
+}
+
 export interface TaskInfo {
   state: TaskState;
   title?: string;
@@ -56,6 +64,8 @@ export interface TaskInfo {
   cost: number;
   tokensIn: number;
   tokensOut: number;
+  contextHistory: PhaseContextInfo[];
+  contextRollup: { totalTokensUsed: number; peakPercentage: number };
 }
 
 export interface WebSocketState {
@@ -104,6 +114,8 @@ export function useWebSocket(url: string): WebSocketState {
             cost: 0,
             tokensIn: 0,
             tokensOut: 0,
+            contextHistory: [],
+            contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
           };
           next.set(data.taskId, {
             ...existing,
@@ -144,19 +156,38 @@ export function useWebSocket(url: string): WebSocketState {
       case "task:agent_finished": {
         setTasks((prev) => {
           const next = new Map(prev);
-          const existing = next.get(data.taskId);
-          if (existing) {
-            next.set(data.taskId, {
-              ...existing,
-              cost: existing.cost + data.cost,
-            });
-          }
+          const existing = next.get(data.taskId) ?? {
+            state: "pending" as TaskState,
+            cost: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            contextHistory: [],
+            contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
+          };
+          const phaseInfo: PhaseContextInfo = {
+            phase: data.phase,
+            model: data.model,
+            tokensUsed: data.tokensIn + data.tokensOut,
+            contextLimit: data.contextLimit,
+            contextPercentage: data.contextPercentage,
+          };
+          const history = [...existing.contextHistory, phaseInfo];
+          const totalTokensUsed = history.reduce((s, h) => s + h.tokensUsed, 0);
+          const peakPercentage = Math.max(...history.map((h) => h.contextPercentage));
+          next.set(data.taskId, {
+            ...existing,
+            cost: existing.cost + data.cost,
+            tokensIn: existing.tokensIn + data.tokensIn,
+            tokensOut: existing.tokensOut + data.tokensOut,
+            contextHistory: history,
+            contextRollup: { totalTokensUsed, peakPercentage },
+          });
           return next;
         });
         setCosts((prev) => ({
           totalCost: prev.totalCost + data.cost,
-          totalTokensIn: prev.totalTokensIn + data.tokens,
-          totalTokensOut: prev.totalTokensOut,
+          totalTokensIn: prev.totalTokensIn + data.tokensIn,
+          totalTokensOut: prev.totalTokensOut + data.tokensOut,
         }));
         break;
       }
@@ -176,6 +207,8 @@ export function useWebSocket(url: string): WebSocketState {
                 cost: 0,
                 tokensIn: 0,
                 tokensOut: 0,
+                contextHistory: [],
+                contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
               });
             }
           }

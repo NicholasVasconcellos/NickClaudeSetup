@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import ContextBar from "./ContextBar";
 
 const STATE_COLORS: Record<string, string> = {
   pending: "#525252",
@@ -32,10 +33,11 @@ interface TaskCardProps {
   state: string;
   phase?: string;
   cost?: number;
+  contextPercentage?: number;
   onClick?: () => void;
 }
 
-export default function TaskCard({ id, title, state, phase, cost, onClick }: TaskCardProps) {
+export default function TaskCard({ id, title, state, phase, cost, contextPercentage, onClick }: TaskCardProps) {
   const stateColor = STATE_COLORS[state] ?? "#525252";
 
   return (
@@ -127,6 +129,12 @@ export default function TaskCard({ id, title, state, phase, cost, onClick }: Tas
           {cost !== undefined && cost > 0 && (
             <span>${cost.toFixed(4)}</span>
           )}
+        </div>
+      )}
+
+      {contextPercentage !== undefined && contextPercentage > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <ContextBar percentage={contextPercentage} tokensUsed={0} contextLimit={0} compact />
         </div>
       )}
     </div>
