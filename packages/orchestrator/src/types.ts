@@ -119,13 +119,6 @@ export interface Session {
   totalCost: number;
 }
 
-// ── DAG Types ────────────────────────────────────────────────
-
-export interface DAGLayer {
-  index: number;
-  taskIds: number[];
-}
-
 // ── WebSocket Events ─────────────────────────────────────────
 
 export type WSEventFromServer =
@@ -133,8 +126,7 @@ export type WSEventFromServer =
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number }
-  | { type: "layer:started"; layerIndex: number; taskIds: number[] }
-  | { type: "layer:completed"; layerIndex: number }
+  | { type: "task:unblocked"; taskId: number }
   | { type: "run:completed"; summary: RunSummary };
 
 export type WSEventFromClient =

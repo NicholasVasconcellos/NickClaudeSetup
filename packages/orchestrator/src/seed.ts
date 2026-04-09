@@ -8,8 +8,7 @@
 
 import chalk from "chalk";
 import { Database } from "./db.js";
-import { computeLayers } from "./dag.js";
-import type { Task, DAGLayer } from "./types.js";
+import type { Task } from "./types.js";
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -246,7 +245,7 @@ const TASK_DEFS: TaskDef[] = [
 
 // ── Seed logic (exported for reuse by demo.ts) ──────────────────
 
-export function seedDatabase(dbPath: string): { db: Database; tasks: Task[]; layers: DAGLayer[]; sessionId: number } {
+export function seedDatabase(dbPath: string): { db: Database; tasks: Task[]; sessionId: number } {
   const db = new Database(dbPath);
   db.init();
 
@@ -266,9 +265,8 @@ export function seedDatabase(dbPath: string): { db: Database; tasks: Task[]; lay
   }
 
   const sessionId = db.createSession();
-  const layers = computeLayers(tasks);
 
-  return { db, tasks, layers, sessionId };
+  return { db, tasks, sessionId };
 }
 
 // ── Pretty-print helpers ────────────────────────────────────────
@@ -294,25 +292,6 @@ function printTasks(tasks: Task[]): void {
   }
 }
 
-function printLayers(layers: DAGLayer[], tasks: Task[]): void {
-  const taskMap = new Map(tasks.map((t) => [t.id, t]));
-
-  console.log(chalk.bold.cyan("\n  DAG Layers (execution order)"));
-  console.log(chalk.gray("  " + "─".repeat(60)));
-
-  for (const layer of layers) {
-    const names = layer.taskIds.map((id) => {
-      const t = taskMap.get(id);
-      return t ? `#${t.id} ${t.title}` : `#${id}`;
-    });
-
-    console.log(chalk.green(`\n  Layer ${layer.index}`) + chalk.gray(` (${names.length} task${names.length > 1 ? "s" : ""}, parallel)`));
-    for (const name of names) {
-      console.log(chalk.white(`    ${name}`));
-    }
-  }
-}
-
 // ── Main ────────────────────────────────────────────────────────
 
 function main(): void {
@@ -321,12 +300,11 @@ function main(): void {
   console.log(chalk.bold.magenta("\n  Orchestrator Seed"));
   console.log(chalk.gray(`  DB path: ${dbPath}`));
 
-  const { db, tasks, layers, sessionId } = seedDatabase(dbPath);
+  const { db, tasks, sessionId } = seedDatabase(dbPath);
 
   printTasks(tasks);
-  printLayers(layers, tasks);
 
-  console.log(chalk.bold.green(`\n  Seeded ${tasks.length} tasks across ${layers.length} layers.`));
+  console.log(chalk.bold.green(`\n  Seeded ${tasks.length} tasks.`));
   console.log(chalk.gray(`  Session ID: ${sessionId}\n`));
 
   db.close();

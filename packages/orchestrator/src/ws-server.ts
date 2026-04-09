@@ -103,12 +103,8 @@ export class EventBus {
     this.broadcast({ type: "task:agent_finished", taskId, phase, tokens, cost });
   }
 
-  layerStarted(layerIndex: number, taskIds: number[]): void {
-    this.broadcast({ type: "layer:started", layerIndex, taskIds });
-  }
-
-  layerCompleted(layerIndex: number): void {
-    this.broadcast({ type: "layer:completed", layerIndex });
+  taskUnblocked(taskId: number): void {
+    this.broadcast({ type: "task:unblocked", taskId });
   }
 
   runCompleted(summary: RunSummary): void {

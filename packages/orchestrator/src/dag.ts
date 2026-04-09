@@ -1,62 +1,30 @@
-import type { Task, DAGLayer } from "./types.ts";
+import type { Task } from "./types.ts";
 
-// ── computeLayers ─────────────────────────────────────────────
-// Returns execution layers via Kahn's algorithm adapted for grouping.
-// Layer 0 = tasks with no deps; layer N = tasks whose deps are all in layers 0..N-1.
+// ── buildBlockedByMap ─────────────────────────────────────────
+// For each task, returns the set of dependency IDs that are not yet terminal.
+// Terminal states: "done", "merged", "skipped", "failed".
 
-export function computeLayers(tasks: Task[]): DAGLayer[] {
-  if (tasks.length === 0) return [];
-
-  const idSet = new Set(tasks.map((t) => t.id));
-  const inDegree = new Map<number, number>();
-  const adjReverse = new Map<number, number[]>(); // id -> list of tasks that depend on it
+export function buildBlockedByMap(tasks: Task[]): Map<number, Set<number>> {
+  const terminal = new Set(["done", "merged", "skipped", "failed"]);
+  const stateMap = new Map(tasks.map((t) => [t.id, t.state]));
+  const result = new Map<number, Set<number>>();
 
   for (const task of tasks) {
-    inDegree.set(task.id, 0);
-    adjReverse.set(task.id, []);
-  }
-
-  for (const task of tasks) {
-    for (const dep of task.dependsOn) {
-      if (!idSet.has(dep)) continue; // skip external refs (validated elsewhere)
-      inDegree.set(task.id, (inDegree.get(task.id) ?? 0) + 1);
-      adjReverse.get(dep)!.push(task.id);
+    if (terminal.has(task.state)) {
+      result.set(task.id, new Set());
+      continue;
     }
-  }
-
-  const layers: DAGLayer[] = [];
-  let frontier: number[] = [];
-
-  for (const [id, deg] of inDegree) {
-    if (deg === 0) frontier.push(id);
-  }
-
-  let processed = 0;
-
-  while (frontier.length > 0) {
-    layers.push({ index: layers.length, taskIds: [...frontier] });
-    processed += frontier.length;
-
-    const nextFrontier: number[] = [];
-    for (const id of frontier) {
-      for (const dependent of adjReverse.get(id)!) {
-        const newDeg = (inDegree.get(dependent) ?? 0) - 1;
-        inDegree.set(dependent, newDeg);
-        if (newDeg === 0) nextFrontier.push(dependent);
+    const pending = new Set<number>();
+    for (const depId of task.dependsOn) {
+      const depState = stateMap.get(depId);
+      if (depState !== undefined && !terminal.has(depState)) {
+        pending.add(depId);
       }
     }
-    frontier = nextFrontier;
+    result.set(task.id, pending);
   }
 
-  if (processed < tasks.length) {
-    const remaining = tasks
-      .filter((t) => (inDegree.get(t.id) ?? 0) > 0)
-      .map((t) => `#${t.id} "${t.title}"`)
-      .join(", ");
-    throw new Error(`Cycle detected in task graph. Tasks involved: ${remaining}`);
-  }
-
-  return layers;
+  return result;
 }
 
 // ── topologicalSort ───────────────────────────────────────────

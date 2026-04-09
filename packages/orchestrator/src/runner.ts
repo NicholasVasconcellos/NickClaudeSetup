@@ -6,7 +6,7 @@ import { ClaudeRunner } from "./claude.js";
 import { StateMachine } from "./state-machine.js";
 import { EventBus } from "./ws-server.js";
 import { LearningPipeline } from "./learning.js";
-import { computeLayers } from "./dag.js";
+import { buildBlockedByMap, getDependents, validateDAG } from "./dag.js";
 
 import type {
   OrchestratorConfig,
@@ -31,6 +31,11 @@ export class Runner {
   private paused: boolean;
   private sessionId: number | null;
 
+  private blockedBy: Map<number, Set<number>>;
+  private activeTasks: number;
+  private readyQueue: number[];
+  private runResolve: (() => void) | null;
+
   private config: OrchestratorConfig;
 
   constructor(config: OrchestratorConfig) {
@@ -47,6 +52,10 @@ export class Runner {
     this.mergeQueue = Promise.resolve();
     this.paused = false;
     this.sessionId = null;
+    this.blockedBy = new Map();
+    this.activeTasks = 0;
+    this.readyQueue = [];
+    this.runResolve = null;
   }
 
   // ── init ──────────────────────────────────────────────────
@@ -104,46 +113,35 @@ export class Runner {
     }, this.config.overallTimeout);
 
     try {
-      // Compute DAG layers from all tasks
+      // Load and validate task graph
       const allTasks = this.db.getAllTasks();
-      const layers = computeLayers(allTasks);
+      const { valid, errors } = validateDAG(allTasks);
+      if (!valid) {
+        throw new Error(`Invalid task graph: ${errors.join("; ")}`);
+      }
+
+      // Build blocked-by map (which deps still need to complete for each task)
+      this.blockedBy = buildBlockedByMap(allTasks);
+
+      // Seed the ready queue with tasks that have no pending dependencies
+      for (const task of allTasks) {
+        const blocked = this.blockedBy.get(task.id);
+        if (task.state === "pending" && blocked && blocked.size === 0) {
+          this.readyQueue.push(task.id);
+        }
+      }
 
       console.log(
-        `[runner] ${allTasks.length} task(s) across ${layers.length} layer(s)`
+        `[runner] ${allTasks.length} task(s), ${this.readyQueue.length} initially ready`
       );
 
-      for (const layer of layers) {
-        if (this.abortController.signal.aborted) break;
-
-        // Filter out tasks that are already terminal (merged, skipped) — allows resuming
-        const pendingTaskIds = layer.taskIds.filter((id) => {
-          const t = this.db.getTask(id);
-          return t && t.state !== "merged" && t.state !== "skipped" && t.state !== "failed";
+      // Start executing — drainReadyQueue fires tasks up to maxConcurrency,
+      // and the promise resolves when no tasks are active and none are queued.
+      if (this.readyQueue.length > 0) {
+        this.drainReadyQueue();
+        await new Promise<void>((resolve) => {
+          this.runResolve = resolve;
         });
-
-        if (pendingTaskIds.length === 0) {
-          console.log(`[runner] layer ${layer.index} — all tasks already complete, skipping`);
-          continue;
-        }
-
-        this.events.layerStarted(layer.index, pendingTaskIds);
-        console.log(
-          `[runner] layer ${layer.index} started — tasks: [${pendingTaskIds.join(", ")}]`
-        );
-
-        // Resolve Task objects
-        const layerTasks = pendingTaskIds
-          .map((id) => this.db.getTask(id))
-          .filter((t): t is Task => t !== null);
-
-        // Execute all tasks in the layer with concurrency control
-        await this.withConcurrency(
-          layerTasks.map((task) => () => this.executeTask(task)),
-          this.config.maxConcurrency
-        );
-
-        this.events.layerCompleted(layer.index);
-        console.log(`[runner] layer ${layer.index} completed`);
       }
     } finally {
       clearTimeout(timeoutHandle);
@@ -178,6 +176,73 @@ export class Runner {
     );
 
     return summary;
+  }
+
+  // ── drainReadyQueue ─────────────────────────────────────────
+
+  private drainReadyQueue(): void {
+    if (this.abortController.signal.aborted) return;
+
+    while (
+      this.readyQueue.length > 0 &&
+      this.activeTasks < this.config.maxConcurrency
+    ) {
+      const taskId = this.readyQueue.shift()!;
+      const task = this.db.getTask(taskId);
+      if (!task || task.state !== "pending") continue;
+
+      this.activeTasks++;
+      console.log(
+        `[runner] starting task ${taskId} (active: ${this.activeTasks}/${this.config.maxConcurrency})`
+      );
+
+      this.executeTask(task).finally(() => {
+        this.onTaskSettled(taskId);
+      });
+    }
+  }
+
+  // ── onTaskSettled ──────────────────────────────────────────
+
+  private onTaskSettled(taskId: number): void {
+    this.activeTasks--;
+
+    const task = this.db.getTask(taskId);
+    const unblocksDeps =
+      task != null && (task.state === "merged" || task.state === "done");
+
+    if (unblocksDeps) {
+      const currentTasks = this.db.getAllTasks();
+      const dependents = getDependents(taskId, currentTasks);
+
+      for (const dep of dependents) {
+        const blocked = this.blockedBy.get(dep.id);
+        if (!blocked) continue;
+        blocked.delete(taskId);
+
+        if (blocked.size === 0 && dep.state === "pending") {
+          this.events.taskUnblocked(dep.id);
+          this.readyQueue.push(dep.id);
+          console.log(`[runner] task ${dep.id} unblocked by task ${taskId}`);
+        }
+      }
+    }
+
+    this.drainReadyQueue();
+    this.checkRunComplete();
+  }
+
+  // ── checkRunComplete ───────────────────────────────────────
+
+  private checkRunComplete(): void {
+    if (
+      this.activeTasks === 0 &&
+      this.readyQueue.length === 0 &&
+      this.runResolve
+    ) {
+      this.runResolve();
+      this.runResolve = null;
+    }
   }
 
   // ── executeTask ───────────────────────────────────────────
@@ -650,7 +715,6 @@ export class Runner {
       case "task:retry": {
         const { taskId } = event;
         try {
-          // Reset state back to pending so it can be picked up again
           const t = this.db.getTask(taskId);
           if (!t) {
             console.warn(`[runner] retry: task ${taskId} not found`);
@@ -661,13 +725,9 @@ export class Runner {
           this.events.taskStateChanged(taskId, prevState, "pending");
           console.log(`[runner] task ${taskId} reset to pending for retry`);
 
-          // Re-execute the task in the background
-          const fresh = this.db.getTask(taskId);
-          if (fresh) {
-            this.executeTask(fresh).catch((err) => {
-              console.error(`[runner] retry executeTask(${taskId}) failed:`, err);
-            });
-          }
+          // Enqueue for execution through the normal flow
+          this.readyQueue.push(taskId);
+          this.drainReadyQueue();
         } catch (err) {
           console.error(`[runner] retry task ${taskId} failed:`, err);
         }
@@ -736,29 +796,6 @@ export class Runner {
     });
 
     console.log("[runner] shutdown complete");
-  }
-
-  // ── withConcurrency ───────────────────────────────────────
-
-  private async withConcurrency<T>(
-    tasks: (() => Promise<T>)[],
-    max: number
-  ): Promise<T[]> {
-    const results: T[] = [];
-    const executing: Set<Promise<void>> = new Set();
-
-    for (const task of tasks) {
-      const p = task()
-        .then((r) => {
-          results.push(r);
-        })
-        .finally(() => executing.delete(p));
-      executing.add(p);
-      if (executing.size >= max) await Promise.race(executing);
-    }
-
-    await Promise.all(executing);
-    return results;
   }
 
   // ── _buildSummary ────────────────────────────────────────

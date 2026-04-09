@@ -11,6 +11,7 @@
 
 import chalk from "chalk";
 import { seedDatabase } from "./seed.js";
+import { buildBlockedByMap, getDependents } from "./dag.js";
 import { EventBus } from "./ws-server.js";
 import type { Task, TaskPhase, RunSummary } from "./types.js";
 
@@ -40,24 +41,18 @@ type EdgeCase =
 
 // Map task IDs to their edge case behavior
 const EDGE_CASES: Record<number, EdgeCase> = {
-  // Layer 0-1: smooth sailing
   1:  { type: "normal" },
   2:  { type: "normal" },
-  // Layer 2: auth has test failures, notification service times out
   3:  { type: "execute_fail_retry", failCount: 1 },
   4:  { type: "normal" },
   5:  { type: "spec_timeout_retry" },
-  // Layer 3: normal
   6:  { type: "normal" },
   7:  { type: "normal" },
   8:  { type: "normal" },
-  // Layer 4: admin dash review rejection, payment permanently fails, WS merge conflict
   9:  { type: "review_rejection" },
   10: { type: "permanent_failure", failCount: 3 },
   11: { type: "merge_conflict" },
-  // Layer 5: E2E tests normal (payment dep failed but tests still run against the rest)
   12: { type: "normal" },
-  // Layer 6: CI normal, monitoring skipped (because payment failed and it needs that path tested)
   13: { type: "normal" },
   14: { type: "skipped" },
 };
@@ -453,10 +448,12 @@ async function main(): Promise<void> {
   console.log(chalk.gray(`  WS:   ws://localhost:${wsPort}`));
   console.log(chalk.gray("  Edge cases: retry, timeout, review rejection, merge conflict, failure, skip\n"));
 
-  const { db, tasks, layers, sessionId } = seedDatabase(dbPath);
-  console.log(chalk.green(`  Seeded ${tasks.length} tasks across ${layers.length} layers, session #${sessionId}`));
+  const { db, tasks, sessionId } = seedDatabase(dbPath);
+  console.log(chalk.green(`  Seeded ${tasks.length} tasks, session #${sessionId}`));
 
   const taskMap = new Map(tasks.map((t) => [t.id, t]));
+  const blockedBy = buildBlockedByMap(tasks);
+  const maxConcurrency = 4;
 
   const bus = new EventBus(wsPort);
   bus.start();
@@ -466,22 +463,62 @@ async function main(): Promise<void> {
 
   const startTime = Date.now();
 
-  for (const layer of layers) {
-    const layerTasks = layer.taskIds.map((id) => taskMap.get(id)!);
+  // Event-driven task execution: tasks start as soon as deps are satisfied
+  let activeTasks = 0;
+  const readyQueue: number[] = [];
 
-    console.log(
-      chalk.cyan(`  ── Layer ${layer.index} `) +
-      chalk.gray(`(${layerTasks.length} task${layerTasks.length > 1 ? "s" : ""})`)
-    );
-
-    bus.layerStarted(layer.index, layer.taskIds);
-
-    // Run tasks in layer concurrently
-    await Promise.all(layerTasks.map((task) => simulateTask(bus, task)));
-
-    bus.layerCompleted(layer.index);
-    console.log(chalk.green(`  ── Layer ${layer.index} completed\n`));
+  // Seed initially-ready tasks
+  for (const task of tasks) {
+    const blocked = blockedBy.get(task.id);
+    if (task.state === "pending" && blocked && blocked.size === 0) {
+      readyQueue.push(task.id);
+    }
   }
+
+  console.log(chalk.cyan(`  ${readyQueue.length} initially ready, ${tasks.length} total\n`));
+
+  await new Promise<void>((runResolve) => {
+    function onTaskSettled(taskId: number): void {
+      activeTasks--;
+      const edge = EDGE_CASES[taskId] ?? { type: "normal" };
+      const didComplete = edge.type !== "permanent_failure" && edge.type !== "skipped";
+
+      if (didComplete) {
+        const dependents = getDependents(taskId, tasks);
+        for (const dep of dependents) {
+          const blocked = blockedBy.get(dep.id);
+          if (!blocked) continue;
+          blocked.delete(taskId);
+
+          if (blocked.size === 0) {
+            bus.taskUnblocked(dep.id);
+            readyQueue.push(dep.id);
+            console.log(
+              chalk.blue(`  → task ${dep.id} unblocked by task ${taskId}`)
+            );
+          }
+        }
+      }
+
+      drainQueue();
+
+      if (activeTasks === 0 && readyQueue.length === 0) {
+        runResolve();
+      }
+    }
+
+    function drainQueue(): void {
+      while (readyQueue.length > 0 && activeTasks < maxConcurrency) {
+        const taskId = readyQueue.shift()!;
+        const task = taskMap.get(taskId);
+        if (!task) continue;
+        activeTasks++;
+        simulateTask(bus, task).finally(() => onTaskSettled(taskId));
+      }
+    }
+
+    drainQueue();
+  });
 
   const duration = Date.now() - startTime;
 
