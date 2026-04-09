@@ -27,18 +27,23 @@ Global context for all agents. Under 300 lines.
 # [Project Name]
 
 ## Goal
+
 [1-2 sentences]
 
 ## Tech Stack
+
 [Languages, frameworks, databases, versions]
 
 ## Project Structure
+
 [Key directories only]
 
 ## Conventions
+
 [From plan. If none: "Follow standard conventions for the stack."]
 
 ## Architecture Notes
+
 [API contracts, data models, cross-task design decisions. Be selective.]
 ```
 
@@ -60,25 +65,32 @@ Prefer fewer, larger tasks when cohesive. Split when: unrelated subsystems, natu
 # Task NNN: [Title]
 
 ## Goal
+
 [1-2 sentences — what completing this achieves]
 
 ## Features / Functionality
+
 - [Observable deliverable]
 
 ## Constraints
+
 - [Technical boundaries, what NOT to do]
 
 ## Acceptance Criteria
+
 - [Testable pass/fail condition]
 
 ## Hints (optional)
+
 [Non-obvious domain knowledge only. Never implementation steps.]
 
 ## Files to Read
+
 - PROJECT.md
 - [exact/path/to/file.ext]
 
 ## Files to Write
+
 - [exact/path/to/file.ext]
 ```
 
@@ -88,6 +100,7 @@ Prefer fewer, larger tasks when cohesive. Split when: unrelated subsystems, natu
 - Acceptance Criteria must be testable.
 - Files to Read: exact paths, always include PROJECT.md.
 - Self-contained: one task + PROJECT.md = everything an agent needs.
+- Walk down each branch of the design tree in the plan file. Create as many tasks as needed, no upper or lower limit, flexible based on the plan.
 
 ## Step 5: Create manifest.json
 
@@ -104,7 +117,7 @@ Prefer fewer, larger tasks when cohesive. Split when: unrelated subsystems, natu
 
 Every task has a matching `.md` file. `depends_on` drives the DAG for parallel execution.
 
-## Step 6: Validate
+## Step 7: Validate
 
 - Every plan milestone covered by at least one task.
 - No task reads files that wouldn't exist given its dependency order.
@@ -112,7 +125,7 @@ Every task has a matching `.md` file. `depends_on` drives the DAG for parallel e
 - Manifest matches task files.
 - PROJECT.md under 300 lines.
 
-## Step 7: Commit
+## Step 8: Commit
 
 ```bash
 git add -A
@@ -120,3 +133,7 @@ git commit -m "tasks: break down plan into $(ls tasks/*.md | wc -l) tasks"
 ```
 
 Report: task count, layer structure (which tasks can run in parallel), summary.
+
+List any missing/ reccomended mcp tools
+
+Based on the plan inform the user of any manual steps needed to get authentication keys, access tokens, etc. Anything that would need to be done trough the browser and placed in the .env.local file. (if any other file specify)
