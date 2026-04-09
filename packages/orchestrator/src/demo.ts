@@ -49,7 +49,7 @@ const EDGE_CASES: Record<number, EdgeCase> = {
   7:  { type: "normal" },
   8:  { type: "normal" },
   9:  { type: "review_rejection" },
-  10: { type: "permanent_failure", failCount: 3 },
+  10: { type: "permanent_failure", failCount: 5 },
   11: { type: "merge_conflict" },
   12: { type: "normal" },
   13: { type: "normal" },
@@ -378,11 +378,25 @@ async function simulatePermanentFailure(bus: EventBus, task: Task, maxRetries: n
         "ERROR: Mock adapter missing subscription lifecycle hooks",
         "Cannot proceed without Stripe test environment",
       ]);
-    } else {
+    } else if (attempt === 3) {
       await emitLogs(bus, task.id, [
         "Attempting alternative: in-memory payment stub...",
         "Building checkout flow against stub...",
         "ERROR: Webhook handler fails — stub doesn't generate signed events",
+        "Trying different approach next attempt...",
+      ]);
+    } else if (attempt === 4) {
+      await emitLogs(bus, task.id, [
+        "Attempting Stripe CLI local forwarding...",
+        "Setting up stripe listen --forward-to localhost:3000/webhooks...",
+        "ERROR: Stripe CLI not found in PATH",
+        "Cannot run integration without Stripe tooling installed",
+      ]);
+    } else {
+      await emitLogs(bus, task.id, [
+        "Final attempt: minimal payment stub with hardcoded responses...",
+        "Building checkout flow against hardcoded stub...",
+        "ERROR: Invoice generation requires real Stripe API responses",
         "FATAL: Cannot implement payment processing without valid Stripe test keys",
       ]);
     }
@@ -459,6 +473,11 @@ async function main(): Promise<void> {
   await sleep(3000);
 
   const startTime = Date.now();
+
+  // Send task metadata to dashboard
+  for (const task of tasks) {
+    bus.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+  }
 
   // Event-driven task execution: tasks start as soon as deps are satisfied
   let activeTasks = 0;

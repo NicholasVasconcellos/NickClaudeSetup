@@ -6,6 +6,9 @@ import TaskCard, { STATE_COLORS } from "./TaskCard";
 interface TaskData {
   state: string;
   title?: string;
+  description?: string;
+  milestone?: string | null;
+  dependsOn?: number[];
   phase?: string;
   cost?: number;
   contextPercentage?: number;
@@ -44,15 +47,14 @@ export default function TaskGraph({
     // Tasks with done/merged state go to earlier layers
     const doneIds: number[] = [];
     const activeIds: number[] = [];
-    const pendingIds: number[] = [];
 
     for (const id of allIds) {
       const task = tasks.get(id);
       if (!task) continue;
+      // Hide pending and skipped tasks from the graph
+      if (task.state === "pending" || task.state === "skipped") continue;
       if (task.state === "done" || task.state === "merged") {
         doneIds.push(id);
-      } else if (task.state === "pending" || task.state === "skipped") {
-        pendingIds.push(id);
       } else {
         activeIds.push(id);
       }
@@ -61,7 +63,6 @@ export default function TaskGraph({
     const result: number[][] = [];
     if (doneIds.length > 0) result.push(doneIds);
     if (activeIds.length > 0) result.push(activeIds);
-    if (pendingIds.length > 0) result.push(pendingIds);
 
     // If no categorization worked, just put everything in one layer
     if (result.length === 0 && allIds.length > 0) {
@@ -181,6 +182,9 @@ export default function TaskGraph({
                 <TaskCard
                   id={taskId}
                   title={task.title ?? `Task ${taskId}`}
+                  description={task.description}
+                  milestone={task.milestone}
+                  dependsOn={task.dependsOn}
                   state={task.state}
                   phase={task.phase}
                   cost={task.cost}

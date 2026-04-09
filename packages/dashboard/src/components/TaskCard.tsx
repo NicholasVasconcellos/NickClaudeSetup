@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import ContextBar from "./ContextBar";
 
 const STATE_COLORS: Record<string, string> = {
@@ -30,6 +30,9 @@ const STATE_LABELS: Record<string, string> = {
 interface TaskCardProps {
   id: number;
   title: string;
+  description?: string;
+  milestone?: string | null;
+  dependsOn?: number[];
   state: string;
   phase?: string;
   cost?: number;
@@ -37,13 +40,34 @@ interface TaskCardProps {
   onClick?: () => void;
 }
 
-export default function TaskCard({ id, title, state, phase, cost, contextPercentage, onClick }: TaskCardProps) {
+export default function TaskCard({ id, title, description, milestone, dependsOn, state, phase, cost, contextPercentage, onClick }: TaskCardProps) {
   const stateColor = STATE_COLORS[state] ?? "#525252";
+  const [hovered, setHovered] = useState(false);
+
+  const tooltipText = [
+    title,
+    description ? description.split("\n").slice(0, 3).join("\n") : null,
+    milestone ? `Milestone: ${milestone}` : null,
+    dependsOn && dependsOn.length > 0 ? `Depends on: ${dependsOn.map(d => `#${d}`).join(", ")}` : null,
+  ].filter(Boolean).join("\n\n");
 
   return (
     <div
       onClick={onClick}
+      onMouseEnter={(e) => {
+        setHovered(true);
+        if (onClick) {
+          e.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
+          e.currentTarget.style.borderColor = stateColor;
+        }
+      }}
+      onMouseLeave={(e) => {
+        setHovered(false);
+        e.currentTarget.style.backgroundColor = "var(--bg-secondary)";
+        e.currentTarget.style.borderColor = `${stateColor}44`;
+      }}
       style={{
+        position: "relative",
         backgroundColor: "var(--bg-secondary)",
         border: `1px solid ${stateColor}44`,
         borderLeft: `3px solid ${stateColor}`,
@@ -52,16 +76,6 @@ export default function TaskCard({ id, title, state, phase, cost, contextPercent
         cursor: onClick ? "pointer" : "default",
         transition: "border-color 0.2s, background-color 0.2s",
         minWidth: 180,
-      }}
-      onMouseEnter={(e) => {
-        if (onClick) {
-          e.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
-          e.currentTarget.style.borderColor = stateColor;
-        }
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = "var(--bg-secondary)";
-        e.currentTarget.style.borderColor = `${stateColor}44`;
       }}
     >
       <div
@@ -112,7 +126,7 @@ export default function TaskCard({ id, title, state, phase, cost, contextPercent
         {title || `Task ${id}`}
       </div>
 
-      {(phase || cost !== undefined) && (
+      {(phase || (cost !== undefined && cost > 0)) && (
         <div
           style={{
             display: "flex",
@@ -135,6 +149,42 @@ export default function TaskCard({ id, title, state, phase, cost, contextPercent
       {contextPercentage !== undefined && contextPercentage > 0 && (
         <div style={{ marginTop: 6 }}>
           <ContextBar percentage={contextPercentage} tokensUsed={0} contextLimit={0} compact />
+        </div>
+      )}
+
+      {/* Hover tooltip */}
+      {hovered && (
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: "calc(100% + 8px)",
+            transform: "translateX(-50%)",
+            backgroundColor: "var(--bg-secondary, #1a1a1a)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: "12px 16px",
+            minWidth: 260,
+            maxWidth: 360,
+            zIndex: 100,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+            pointerEvents: "none",
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 6 }}>
+            #{id} {title}
+          </div>
+          {description && (
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: 6 }}>
+              {description.split("\n").slice(0, 4).join("\n")}
+            </div>
+          )}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 11, color: "var(--text-muted)" }}>
+            {milestone && <span>Milestone: {milestone}</span>}
+            {dependsOn && dependsOn.length > 0 && (
+              <span>Deps: {dependsOn.map(d => `#${d}`).join(", ")}</span>
+            )}
+          </div>
         </div>
       )}
     </div>

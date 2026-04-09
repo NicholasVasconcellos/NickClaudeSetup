@@ -142,6 +142,7 @@ export type WSEventFromServer =
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; model: string; contextLimit: number; contextPercentage: number }
+  | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: TaskEffort | null }
   | { type: "task:unblocked"; taskId: number }
   | { type: "run:completed"; summary: RunSummary }
   | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };

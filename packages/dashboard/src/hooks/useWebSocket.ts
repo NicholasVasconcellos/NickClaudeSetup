@@ -24,6 +24,7 @@ type WSEventFromServer =
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "layer:started"; layerIndex: number; taskIds: number[] }
   | { type: "layer:completed"; layerIndex: number }
+  | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: string | null }
   | { type: "run:completed"; summary: RunSummary };
 
 interface RunSummary {
@@ -59,6 +60,10 @@ export interface PhaseContextInfo {
 export interface TaskInfo {
   state: TaskState;
   title?: string;
+  description?: string;
+  dependsOn?: number[];
+  milestone?: string | null;
+  effort?: string | null;
   phase?: TaskPhase;
   model?: string;
   cost: number;
@@ -121,6 +126,30 @@ export function useWebSocket(url: string): WebSocketState {
             ...existing,
             state: data.newState,
             title: data.title ?? existing.title,
+          });
+          return next;
+        });
+        break;
+      }
+
+      case "task:init": {
+        setTasks((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(data.taskId) ?? {
+            state: "pending" as TaskState,
+            cost: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            contextHistory: [],
+            contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
+          };
+          next.set(data.taskId, {
+            ...existing,
+            title: data.title,
+            description: data.description,
+            dependsOn: data.dependsOn,
+            milestone: data.milestone,
+            effort: data.effort,
           });
           return next;
         });

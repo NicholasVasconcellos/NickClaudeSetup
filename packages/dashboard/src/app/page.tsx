@@ -15,11 +15,14 @@ export default function DashboardPage() {
   const [paused, setPaused] = useState(false);
 
   const taskGraphData = useMemo(() => {
-    const data = new Map<number, { state: string; title?: string; phase?: string; cost?: number; contextPercentage?: number }>();
+    const data = new Map<number, { state: string; title?: string; description?: string; milestone?: string | null; dependsOn?: number[]; phase?: string; cost?: number; contextPercentage?: number }>();
     tasks.forEach((info, id) => {
       data.set(id, {
         state: info.state,
         title: info.title,
+        description: info.description,
+        milestone: info.milestone,
+        dependsOn: info.dependsOn,
         phase: info.phase,
         cost: info.cost,
         contextPercentage: info.contextRollup?.peakPercentage,
@@ -172,6 +175,82 @@ export default function DashboardPage() {
             />
           </div>
 
+          {/* Task Detail (shown when task selected) */}
+          {selectedTaskId != null && (() => {
+            const task = tasks.get(selectedTaskId);
+            if (!task) return null;
+            return (
+              <div
+                style={{
+                  flexShrink: 0,
+                  backgroundColor: "var(--bg-secondary)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: 16,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
+                    #{selectedTaskId} {task.title ?? `Task ${selectedTaskId}`}
+                  </span>
+                  <button
+                    onClick={() => setSelectedTaskId(undefined)}
+                    style={{
+                      background: "none",
+                      border: "1px solid var(--border)",
+                      color: "var(--text-muted)",
+                      fontSize: 11,
+                      padding: "2px 8px",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+
+                {task.description && (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      color: "var(--text-secondary)",
+                      whiteSpace: "pre-wrap",
+                      maxHeight: 120,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {task.description}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
+                  {task.milestone && (
+                    <span>Milestone: <span style={{ color: "var(--text-secondary)" }}>{task.milestone}</span></span>
+                  )}
+                  {task.effort && (
+                    <span>Effort: <span style={{ color: "var(--text-secondary)", textTransform: "capitalize" }}>{task.effort}</span></span>
+                  )}
+                  {task.dependsOn && task.dependsOn.length > 0 && (
+                    <span>Depends on: <span style={{ color: "var(--text-secondary)" }}>{task.dependsOn.map(d => `#${d}`).join(", ")}</span></span>
+                  )}
+                  {task.model && (
+                    <span>Model: <span style={{ color: "var(--text-secondary)" }}>{task.model}</span></span>
+                  )}
+                  {task.cost > 0 && (
+                    <span>Cost: <span style={{ color: "var(--text-secondary)" }}>${task.cost.toFixed(4)}</span></span>
+                  )}
+                  {(task.tokensIn > 0 || task.tokensOut > 0) && (
+                    <span>Tokens: <span style={{ color: "var(--text-secondary)" }}>{task.tokensIn.toLocaleString()} in / {task.tokensOut.toLocaleString()} out</span></span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Log viewer */}
           <div style={{ flexShrink: 0 }}>
             <div
@@ -193,22 +272,6 @@ export default function DashboardPage() {
               >
                 {selectedTaskId != null ? `Logs - Task #${selectedTaskId}` : "All Logs"}
               </span>
-              {selectedTaskId != null && (
-                <button
-                  onClick={() => setSelectedTaskId(undefined)}
-                  style={{
-                    background: "none",
-                    border: "1px solid var(--border)",
-                    color: "var(--text-muted)",
-                    fontSize: 11,
-                    padding: "2px 8px",
-                    borderRadius: 3,
-                    cursor: "pointer",
-                  }}
-                >
-                  Show All
-                </button>
-              )}
             </div>
             <LogViewer logs={selectedLogs} maxHeight={250} />
           </div>

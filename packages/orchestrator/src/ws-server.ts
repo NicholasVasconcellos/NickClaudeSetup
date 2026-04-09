@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type {
   TaskState,
   TaskPhase,
+  TaskEffort,
   RunSummary,
   WSEventFromServer,
   WSEventFromClient,
@@ -11,6 +12,7 @@ export class EventBus {
   private wss: WebSocketServer | null = null;
   private clients: Set<WebSocket> = new Set();
   private onClientMessage: ((event: WSEventFromClient) => void) | null = null;
+  private initBuffer: WSEventFromServer[] = [];
 
   constructor(private readonly port: number) {}
 
@@ -20,6 +22,11 @@ export class EventBus {
     this.wss.on("connection", (ws: WebSocket) => {
       this.clients.add(ws);
       console.log(`[ws] client connected (total: ${this.clients.size})`);
+
+      // Replay buffered init events to late-connecting clients
+      for (const event of this.initBuffer) {
+        try { ws.send(JSON.stringify(event)); } catch {}
+      }
 
       ws.on("message", (data) => {
         try {
@@ -86,6 +93,12 @@ export class EventBus {
   }
 
   // ── Broadcast helpers ───────────────────────────────────────
+
+  taskInit(taskId: number, title: string, description: string, dependsOn: number[], milestone: string | null, effort: TaskEffort | null): void {
+    const event: WSEventFromServer = { type: "task:init", taskId, title, description, dependsOn, milestone, effort };
+    this.initBuffer.push(event);
+    this.broadcast(event);
+  }
 
   taskStateChanged(taskId: number, oldState: TaskState, newState: TaskState, title?: string): void {
     this.broadcast({ type: "task:state_change", taskId, oldState, newState, ...(title ? { title } : {}) });
