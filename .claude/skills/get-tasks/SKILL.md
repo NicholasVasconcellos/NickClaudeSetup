@@ -1,4 +1,13 @@
-# Skill: get-tasks
+---
+name: get-tasks
+description: >
+  Break a PRD, issue, or user description into milestones and atomic tasks
+  with dependency ordering. Outputs structured JSON task plan.
+  Trigger on: /get-tasks
+disable-model-invocation: true
+---
+
+# get-tasks
 
 Analyze the project and decompose it into milestones and atomic tasks.
 
@@ -82,7 +91,7 @@ Schema:
 Rules for the JSON output:
 - `title` is unique across all milestones
 - `description` is self-contained — a fresh agent must be able to read it and know exactly what to implement and how to verify it is done
-- `dependsOn` references `title` strings exactly as written; use `[]` if there are no dependencies
+- `dependsOn` references `title` strings exactly as written; use `[]` if there are no dependencies.
 
 ## Step 6 — Post-output checklist
 

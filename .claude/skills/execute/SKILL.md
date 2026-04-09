@@ -1,4 +1,13 @@
-# Skill: execute
+---
+name: execute
+description: >
+  Implement a task. Tests already exist from the spec phase — make them pass.
+  Uses subagents for parallel independent chunks when appropriate.
+  Trigger on: /execute
+disable-model-invocation: true
+---
+
+# execute
 
 Implement the assigned task. Tests already exist from the spec phase. Your job is to make them pass.
 

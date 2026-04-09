@@ -1,4 +1,13 @@
-# Skill: review
+---
+name: review
+description: >
+  Review and clean up changes from the execute phase. Quality gate covering
+  tests, security (OWASP), performance, and dead code. Outputs PASSED/FAILED.
+  Trigger on: /review
+disable-model-invocation: true
+---
+
+# review
 
 Review and clean up the changes made during the execute phase. This is a quality gate, not a rewrite.
 

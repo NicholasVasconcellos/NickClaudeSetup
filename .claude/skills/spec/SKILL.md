@@ -1,4 +1,13 @@
-# Skill: spec
+---
+name: spec
+description: >
+  Write tests for a task based on its acceptance criteria. Tests only — no
+  implementation code. Detects the existing test framework and follows project
+  conventions. Trigger on: /spec
+disable-model-invocation: true
+---
+
+# spec
 
 Write tests for the assigned task. You are in the spec phase — implementation does not exist yet. Your job is to define what correct behavior looks like, in code.
 

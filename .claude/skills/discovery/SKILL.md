@@ -1,4 +1,13 @@
-# Skill: discovery
+---
+name: discovery
+description: >
+  Run pre-execution discovery on the project. Scans services, tools,
+  dependencies, and library versions. Outputs a structured readiness report.
+  Trigger on: /discovery
+disable-model-invocation: true
+---
+
+# discovery
 
 Run pre-execution discovery on the project. Verify that all required services, tools, and dependencies are available and configured before any task work begins.
 
@@ -54,7 +63,7 @@ Identify all tools available in the current environment:
 
 **MCP servers**: List every MCP server that is currently active. For each, note what it provides (e.g., "Playwright MCP — browser automation").
 
-**Skills**: List skills available in the `skills/` directory (or wherever the orchestrator stores them).
+**Skills**: List skills available in the `.claude/skills/` directory.
 
 **CLI tools**: Check for relevant CLI tools (`git`, `gh`, `docker`, `pnpm`, `npm`, `yarn`, `cargo`, `go`, `python`, `aws`, `gcloud`, `vercel`, `supabase`, etc.) by running `which <tool>` or equivalent. Note version for each found tool.
 
