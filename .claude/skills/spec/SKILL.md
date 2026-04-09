@@ -21,7 +21,7 @@ Read both before writing a single line of test code.
 
 ## Step 1 — Understand the acceptance criteria
 
-Re-read the task description. Extract every acceptance criterion as a discrete, verifiable statement. If a criterion is ambiguous, resolve it by reading the surrounding code (existing types, interfaces, related modules) — do not ask unless truly unresolvable.
+From the task criteria. Extract every acceptance criterion as a discrete, verifiable statement. If a criterion is ambiguous, resolve it by reading the surrounding code (existing types, interfaces, related modules) — do not ask unless truly unresolvable.
 
 ## Step 2 — Detect the test framework
 
