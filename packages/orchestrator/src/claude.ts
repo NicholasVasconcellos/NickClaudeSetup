@@ -7,6 +7,7 @@ export interface RunTaskOptions {
   prompt: string;
   cwd: string;
   model?: string;
+  effort?: string;
   timeout?: number;
   onOutput?: (line: string) => void;
   signal?: AbortSignal;
@@ -142,6 +143,7 @@ export class ClaudeRunner {
       prompt,
       cwd,
       model,
+      effort,
       onOutput,
       signal: externalSignal,
     } = options;
@@ -167,6 +169,7 @@ export class ClaudeRunner {
         prompt,
         "--model",
         resolvedModel,
+        ...(effort ? ["--effort", effort] : []),
         "--output-format",
         "json",
         "--verbose",

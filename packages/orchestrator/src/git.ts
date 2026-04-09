@@ -184,6 +184,13 @@ export class GitManager {
     return stdout.length === 0;
   }
 
+  async getFilesChangedByMerge(): Promise<string[]> {
+    const { stdout } = await this.exec([
+      "diff", "--name-only", "HEAD^1", "HEAD",
+    ]);
+    return stdout.split("\n").filter(Boolean);
+  }
+
   async cleanupOrphanedWorktrees(): Promise<number> {
     const { stdout } = await this.exec(["worktree", "list", "--porcelain"]);
 

@@ -285,7 +285,7 @@ export class Runner {
 
   // ── runPhase ─────────────────────────────────────────────
 
-  private static readonly PHASE_STATE: Record<TaskPhase, TaskState> = {
+  private static readonly PHASE_STATE: Record<string, TaskState> = {
     spec: "spec",
     execute: "executing",
     review: "reviewing",
@@ -304,14 +304,16 @@ export class Runner {
     this.events.taskStateChanged(taskId, oldState, targetState);
     this.events.agentStarted(taskId, phase, model);
 
-    const runId = this.db.startAgentRun(taskId, phase, model);
     const task = this.db.getTask(taskId)!;
+    const effort = task.effort ?? this.config.phaseEffortDefaults[phase];
+    const runId = this.db.startAgentRun(taskId, phase, model);
     const prompt = this.buildPrompt(task, phase);
 
     const result = await this.claude.runTask({
       prompt,
       cwd: worktreePath,
       model,
+      effort,
       timeout: this.config.taskTimeout,
       signal,
       onOutput: (line) => {
@@ -405,6 +407,13 @@ export class Runner {
     if (success) {
       this.db.recordMerge(taskId, "success", false);
 
+      try {
+        const changedFiles = await this.git.getFilesChangedByMerge();
+        this.db.updateFilesChanged(taskId, changedFiles);
+      } catch (err) {
+        console.warn(`[task:${taskId}] failed to record files changed:`, err);
+      }
+
       if (this.config.pushAfterMerge) {
         try {
           await this.git.push();
@@ -430,6 +439,13 @@ export class Runner {
 
       if (resolved) {
         this.db.recordMerge(taskId, "success", true);
+
+        try {
+          const changedFiles = await this.git.getFilesChangedByMerge();
+          this.db.updateFilesChanged(taskId, changedFiles);
+        } catch (err) {
+          console.warn(`[task:${taskId}] failed to record files changed:`, err);
+        }
 
         if (this.config.pushAfterMerge) {
           try {
@@ -562,53 +578,24 @@ export class Runner {
   // ── buildPrompt ───────────────────────────────────────────
 
   private buildPrompt(task: Task, phase: TaskPhase): string {
-    const depContext = this.db.getCompletedTaskContext(task.dependsOn);
+    const { titles, files } = this.db.getCompletedTaskContext(task.dependsOn);
 
-    const depSection =
-      depContext.length > 0
-        ? `\n\n## Completed dependency tasks\n${depContext}`
-        : "";
-
-    const baseSection =
+    const taskSection =
       `## Task #${task.id}: ${task.title}\n\n` +
-      `${task.description}` +
-      depSection;
+      task.description;
 
-    switch (phase) {
-      case "spec":
-        return (
-          `${baseSection}\n\n` +
-          `## Instructions\n` +
-          `Write tests based on these acceptance criteria. Do not implement yet.\n` +
-          `Create comprehensive test files in the worktree. ` +
-          `Tests should be runnable and initially failing (red). ` +
-          `Focus on behaviour, not implementation details.`
-        );
+    const depTitleSection = titles.length > 0
+      ? `\n\n## Completed dependency tasks\n${titles}`
+      : "";
 
-      case "execute":
-        return (
-          `${baseSection}\n\n` +
-          `## Instructions\n` +
-          `Implement the code to pass these tests. Use subagents for parallel work.\n` +
-          `The tests are already written in the worktree — make them pass. ` +
-          `Do not modify the test files unless they contain bugs. ` +
-          `Run the tests frequently to verify progress.`
-        );
+    const depFileRefs = files.length > 0
+      ? `\n\n## Dependency files\n${files.map(f => `@${f}`).join(" ")}`
+      : "";
 
-      case "review":
-        return (
-          `${baseSection}\n\n` +
-          `## Instructions\n` +
-          `Review and clean up the code. Run all tests. Fix any issues.\n` +
-          `Ensure: all tests pass, code is clean and idiomatic, no debug artifacts remain, ` +
-          `TypeScript types are sound, and linting passes. ` +
-          `Do not add new features — only clean up and fix.`
-        );
+    // Invoke the corresponding skill for spec/execute/review; merge has no skill
+    const skillInvocation = phase !== "merge" ? `/${phase}\n\n` : "";
 
-      case "merge":
-        // Merge prompts are built inline in _attemptConflictResolution
-        return `${baseSection}\n\n## Instructions\nResolve merge conflicts.`;
-    }
+    return `${skillInvocation}${taskSection}${depTitleSection}${depFileRefs}`;
   }
 
   // ── handleCommand ─────────────────────────────────────────

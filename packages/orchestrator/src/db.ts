@@ -5,6 +5,7 @@ import path from "path";
 import type {
   Task,
   TaskRow,
+  TaskEffort,
   AgentRun,
   AgentRunRow,
   TaskLog,
@@ -29,6 +30,8 @@ function taskRowToTask(row: TaskRow): Task {
     title: row.title,
     description: row.description,
     dependsOn: JSON.parse(row.depends_on) as number[],
+    effort: (row.effort as TaskEffort) ?? null,
+    filesChanged: JSON.parse(row.files_changed) as string[],
     state: row.state,
     phase: row.phase,
     milestone: row.milestone,
@@ -90,6 +93,8 @@ export class Database {
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         depends_on TEXT NOT NULL DEFAULT '[]',
+        effort TEXT,
+        files_changed TEXT NOT NULL DEFAULT '[]',
         state TEXT NOT NULL DEFAULT 'pending',
         phase TEXT,
         milestone TEXT,
@@ -157,17 +162,19 @@ export class Database {
     title: string,
     description: string,
     dependsOn: number[],
-    milestone?: string
+    milestone?: string,
+    effort?: TaskEffort | null,
   ): Task {
     const stmt = this.db.prepare(`
-      INSERT INTO tasks (title, description, depends_on, milestone)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO tasks (title, description, depends_on, milestone, effort)
+      VALUES (?, ?, ?, ?, ?)
     `);
     const info = stmt.run(
       title,
       description,
       JSON.stringify(dependsOn),
-      milestone ?? null
+      milestone ?? null,
+      effort ?? null,
     );
     return this.getTask(info.lastInsertRowid as number) as Task;
   }
@@ -232,15 +239,25 @@ export class Database {
     return row?.retry_count ?? 0;
   }
 
-  getCompletedTaskContext(taskIds: number[]): string {
-    if (taskIds.length === 0) return "";
+  getCompletedTaskContext(taskIds: number[]): { titles: string; files: string[] } {
+    if (taskIds.length === 0) return { titles: "", files: [] };
     const placeholders = taskIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
-        `SELECT id, title FROM tasks WHERE id IN (${placeholders}) AND state IN ('done', 'merged') ORDER BY id`
+        `SELECT id, title, files_changed FROM tasks WHERE id IN (${placeholders}) AND state IN ('done', 'merged') ORDER BY id`
       )
-      .all(...taskIds) as Array<{ id: number; title: string }>;
-    return rows.map((r) => `[${r.id}] ${r.title}`).join("\n");
+      .all(...taskIds) as Array<{ id: number; title: string; files_changed: string }>;
+    const titles = rows.map((r) => `[${r.id}] ${r.title}`).join("\n");
+    const files = rows.flatMap((r) => JSON.parse(r.files_changed) as string[]);
+    return { titles, files };
+  }
+
+  updateFilesChanged(id: number, files: string[]): void {
+    this.db
+      .prepare(
+        "UPDATE tasks SET files_changed = ?, updated_at = datetime('now') WHERE id = ?"
+      )
+      .run(JSON.stringify(files), id);
   }
 
   // ── Task Logs ───────────────────────────────────────────────

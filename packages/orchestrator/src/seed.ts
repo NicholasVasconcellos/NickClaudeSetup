@@ -8,7 +8,7 @@
 
 import chalk from "chalk";
 import { Database } from "./db.js";
-import type { Task } from "./types.js";
+import type { Task, TaskEffort } from "./types.js";
 
 // ── CLI args ────────────────────────────────────────────────────
 
@@ -33,6 +33,7 @@ interface TaskDef {
   description: string;
   dependsOn: number[]; // references to 1-based positions in this array
   milestone: string;
+  effort?: TaskEffort;
 }
 
 const TASK_DEFS: TaskDef[] = [
@@ -260,7 +261,7 @@ export function seedDatabase(dbPath: string): { db: Database; tasks: Task[]; ses
       return depTask.id;
     });
 
-    const task = db.createTask(def.title, def.description, resolvedDeps, def.milestone);
+    const task = db.createTask(def.title, def.description, resolvedDeps, def.milestone, def.effort);
     tasks.push(task);
   }
 

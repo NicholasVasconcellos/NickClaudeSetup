@@ -13,6 +13,8 @@ export type TaskState =
 
 export type TaskPhase = "spec" | "execute" | "review" | "merge";
 
+export type TaskEffort = "low" | "medium" | "high" | "max";
+
 // ── Core Entities ────────────────────────────────────────────
 
 export interface Task {
@@ -20,6 +22,8 @@ export interface Task {
   title: string;
   description: string;
   dependsOn: number[];
+  effort: TaskEffort | null;
+  filesChanged: string[];
   state: TaskState;
   phase: TaskPhase | null;
   milestone: string | null;
@@ -36,6 +40,8 @@ export interface TaskRow {
   title: string;
   description: string;
   depends_on: string; // JSON array
+  effort: string | null;
+  files_changed: string; // JSON array
   state: TaskState;
   phase: TaskPhase | null;
   milestone: string | null;
@@ -156,6 +162,7 @@ export interface OrchestratorConfig {
     merge: string;
     learning: string;
   };
+  phaseEffortDefaults: Record<TaskPhase, TaskEffort>;
 }
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -173,6 +180,12 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     review: "claude-sonnet-4-6",
     merge: "claude-opus-4-6",
     learning: "claude-opus-4-6",
+  },
+  phaseEffortDefaults: {
+    spec: "medium",
+    execute: "high",
+    review: "medium",
+    merge: "high",
   },
 };
 
