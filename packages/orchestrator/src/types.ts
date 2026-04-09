@@ -128,7 +128,7 @@ export interface Session {
 // ── WebSocket Events ─────────────────────────────────────────
 
 export type WSEventFromServer =
-  | { type: "task:state_change"; taskId: number; oldState: TaskState; newState: TaskState }
+  | { type: "task:state_change"; taskId: number; oldState: TaskState; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number }

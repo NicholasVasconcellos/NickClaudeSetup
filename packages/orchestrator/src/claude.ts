@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { ClaudeResult, OrchestratorConfig } from "./types.js";
+import { ClaudeResult, OrchestratorConfig, TaskEffort } from "./types.js";
 
 // ── RunTaskOptions ────────────────────────────────────────────
 
@@ -7,7 +7,7 @@ export interface RunTaskOptions {
   prompt: string;
   cwd: string;
   model?: string;
-  effort?: string;
+  effort?: TaskEffort;
   timeout?: number;
   onOutput?: (line: string) => void;
   signal?: AbortSignal;

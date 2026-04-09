@@ -87,8 +87,8 @@ export class EventBus {
 
   // ── Broadcast helpers ───────────────────────────────────────
 
-  taskStateChanged(taskId: number, oldState: TaskState, newState: TaskState): void {
-    this.broadcast({ type: "task:state_change", taskId, oldState, newState });
+  taskStateChanged(taskId: number, oldState: TaskState, newState: TaskState, title?: string): void {
+    this.broadcast({ type: "task:state_change", taskId, oldState, newState, ...(title ? { title } : {}) });
   }
 
   taskLogAppend(taskId: number, line: string): void {

@@ -285,7 +285,7 @@ export class Runner {
 
   // ── runPhase ─────────────────────────────────────────────
 
-  private static readonly PHASE_STATE: Record<string, TaskState> = {
+  private static readonly PHASE_STATE: Record<Exclude<TaskPhase, "merge">, TaskState> = {
     spec: "spec",
     execute: "executing",
     review: "reviewing",
@@ -293,18 +293,17 @@ export class Runner {
 
   private async runPhase(
     taskId: number,
-    phase: TaskPhase,
+    phase: Exclude<TaskPhase, "merge">,
     worktreePath: string,
     signal: AbortSignal,
   ): Promise<void> {
     const targetState = Runner.PHASE_STATE[phase];
     const model = this.config.models[phase];
 
-    const oldState = this.stateMachine.transition(taskId, targetState);
-    this.events.taskStateChanged(taskId, oldState, targetState);
-    this.events.agentStarted(taskId, phase, model);
-
     const task = this.db.getTask(taskId)!;
+    const oldState = this.stateMachine.transition(taskId, targetState);
+    this.events.taskStateChanged(taskId, oldState, targetState, task.title);
+    this.events.agentStarted(taskId, phase, model);
     const effort = task.effort ?? this.config.phaseEffortDefaults[phase];
     const runId = this.db.startAgentRun(taskId, phase, model);
     const prompt = this.buildPrompt(task, phase);
@@ -346,7 +345,7 @@ export class Runner {
       this.db.updateTaskWorktree(taskId, wt.worktreePath, wt.branch);
       console.log(`[task:${taskId}] worktree created at ${wt.worktreePath}`);
 
-      for (const phase of ["spec", "execute", "review"] as TaskPhase[]) {
+      for (const phase of ["spec", "execute", "review"] as const) {
         await this.runPhase(taskId, phase, wt.worktreePath, signal);
         if (signal.aborted) return;
       }
@@ -354,7 +353,7 @@ export class Runner {
       // ── Transition to done, then enqueue merge ─────────────
       {
         const oldState = this.stateMachine.transition(taskId, "done");
-        this.events.taskStateChanged(taskId, oldState, "done");
+        this.events.taskStateChanged(taskId, oldState, "done", task.title);
       }
 
       await this.enqueueMerge(taskId);
@@ -370,7 +369,7 @@ export class Runner {
         this.stateMachine.fail(taskId);
         const updatedTask = this.db.getTask(taskId);
         const newState = updatedTask?.state ?? "failed";
-        this.events.taskStateChanged(taskId, freshTask?.state ?? "executing", newState);
+        this.events.taskStateChanged(taskId, freshTask?.state ?? "executing", newState, freshTask?.title);
         console.log(
           `[task:${taskId}] state after failure: ${newState} ` +
             `(retry ${updatedTask?.retryCount ?? "?"}/${updatedTask?.maxRetries ?? "?"})`
@@ -406,26 +405,7 @@ export class Runner {
 
     if (success) {
       this.db.recordMerge(taskId, "success", false);
-
-      try {
-        const changedFiles = await this.git.getFilesChangedByMerge();
-        this.db.updateFilesChanged(taskId, changedFiles);
-      } catch (err) {
-        console.warn(`[task:${taskId}] failed to record files changed:`, err);
-      }
-
-      if (this.config.pushAfterMerge) {
-        try {
-          await this.git.push();
-          console.log(`[task:${taskId}] pushed to remote`);
-        } catch (pushErr) {
-          console.warn(`[task:${taskId}] push failed (non-fatal):`, pushErr);
-        }
-      }
-
-      const oldState = this.stateMachine.transition(taskId, "merged");
-      this.events.taskStateChanged(taskId, oldState, "merged");
-      console.log(`[task:${taskId}] merged successfully`);
+      await this._finalizeMerge(taskId, "merged successfully");
     } else {
       // Merge conflict — spawn an agent to resolve it before giving up.
       // The working tree still has conflict markers at this point.
@@ -439,26 +419,7 @@ export class Runner {
 
       if (resolved) {
         this.db.recordMerge(taskId, "success", true);
-
-        try {
-          const changedFiles = await this.git.getFilesChangedByMerge();
-          this.db.updateFilesChanged(taskId, changedFiles);
-        } catch (err) {
-          console.warn(`[task:${taskId}] failed to record files changed:`, err);
-        }
-
-        if (this.config.pushAfterMerge) {
-          try {
-            await this.git.push();
-            console.log(`[task:${taskId}] pushed to remote`);
-          } catch (pushErr) {
-            console.warn(`[task:${taskId}] push failed (non-fatal):`, pushErr);
-          }
-        }
-
-        const oldState = this.stateMachine.transition(taskId, "merged");
-        this.events.taskStateChanged(taskId, oldState, "merged");
-        console.log(`[task:${taskId}] merge conflict resolved and merged`);
+        await this._finalizeMerge(taskId, "merge conflict resolved and merged");
       } else {
         // Agent couldn't resolve — abort merge and fail the task
         try {
@@ -476,7 +437,7 @@ export class Runner {
         this.stateMachine.fail(taskId);
         const updatedTask = this.db.getTask(taskId);
         const newState = updatedTask?.state ?? "failed";
-        this.events.taskStateChanged(taskId, "done", newState);
+        this.events.taskStateChanged(taskId, "done", newState, updatedTask?.title);
       }
     }
 
@@ -485,6 +446,30 @@ export class Runner {
       console.warn(`[task:${taskId}] post-merge worktree cleanup failed:`, e);
     });
     this.db.updateTaskWorktree(taskId, null, null);
+  }
+
+  // ── _finalizeMerge ──────────────────────────────────────────
+
+  private async _finalizeMerge(taskId: number, logMsg: string): Promise<void> {
+    try {
+      const changedFiles = await this.git.getFilesChangedByMerge();
+      this.db.updateFilesChanged(taskId, changedFiles);
+    } catch (err) {
+      console.warn(`[task:${taskId}] failed to record files changed:`, err);
+    }
+
+    if (this.config.pushAfterMerge) {
+      try {
+        await this.git.push();
+        console.log(`[task:${taskId}] pushed to remote`);
+      } catch (pushErr) {
+        console.warn(`[task:${taskId}] push failed (non-fatal):`, pushErr);
+      }
+    }
+
+    const oldState = this.stateMachine.transition(taskId, "merged");
+    this.events.taskStateChanged(taskId, oldState, "merged", this.db.getTask(taskId)?.title);
+    console.log(`[task:${taskId}] ${logMsg}`);
   }
 
   // ── _attemptConflictResolution ─────────────────────────────
@@ -530,10 +515,13 @@ export class Runner {
       `5. After resolving, run any available tests to verify nothing is broken.\n` +
       `6. Do NOT commit — the orchestrator will handle staging and committing.`;
 
+    const effort = this.config.phaseEffortDefaults[phase];
+
     const result = await this.claude.runTask({
       prompt,
       cwd: this.config.projectDir,
       model,
+      effort,
       timeout: this.config.taskTimeout,
       signal: this.abortController.signal,
       onOutput: (line) => {
@@ -605,9 +593,9 @@ export class Runner {
       case "task:pause": {
         const { taskId } = event;
         try {
-          this.stateMachine.pause(taskId);
           const t = this.db.getTask(taskId);
-          this.events.taskStateChanged(taskId, t?.state ?? "paused", "paused");
+          this.stateMachine.pause(taskId);
+          this.events.taskStateChanged(taskId, t?.state ?? "paused", "paused", t?.title);
           console.log(`[runner] task ${taskId} paused`);
         } catch (err) {
           console.error(`[runner] pause task ${taskId} failed:`, err);
@@ -618,9 +606,9 @@ export class Runner {
       case "task:resume": {
         const { taskId } = event;
         try {
-          this.stateMachine.resume(taskId);
           const t = this.db.getTask(taskId);
-          this.events.taskStateChanged(taskId, "paused", t?.state ?? "executing");
+          this.stateMachine.resume(taskId);
+          this.events.taskStateChanged(taskId, "paused", t?.state ?? "executing", t?.title);
           console.log(`[runner] task ${taskId} resumed`);
         } catch (err) {
           console.error(`[runner] resume task ${taskId} failed:`, err);
@@ -638,7 +626,7 @@ export class Runner {
           }
           const prevState = t.state;
           this.db.updateTaskState(taskId, "pending", null);
-          this.events.taskStateChanged(taskId, prevState, "pending");
+          this.events.taskStateChanged(taskId, prevState, "pending", t.title);
           console.log(`[runner] task ${taskId} reset to pending for retry`);
 
           // Enqueue for execution through the normal flow
@@ -660,7 +648,7 @@ export class Runner {
           }
           const prevState = t.state;
           this.stateMachine.skip(taskId);
-          this.events.taskStateChanged(taskId, prevState, "skipped");
+          this.events.taskStateChanged(taskId, prevState, "skipped", t.title);
           console.log(`[runner] task ${taskId} skipped`);
         } catch (err) {
           console.error(`[runner] skip task ${taskId} failed:`, err);

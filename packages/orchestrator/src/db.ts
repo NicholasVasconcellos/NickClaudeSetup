@@ -154,6 +154,16 @@ export class Database {
         total_cost REAL NOT NULL DEFAULT 0
       );
     `);
+
+    // Migrations: add columns that may be missing from older databases.
+    // SQLite has no ADD COLUMN IF NOT EXISTS, so try/catch each one.
+    const migrations = [
+      "ALTER TABLE tasks ADD COLUMN effort TEXT",
+      "ALTER TABLE tasks ADD COLUMN files_changed TEXT NOT NULL DEFAULT '[]'",
+    ];
+    for (const sql of migrations) {
+      try { this.db.exec(sql); } catch { /* column already exists */ }
+    }
   }
 
   // ── Tasks ───────────────────────────────────────────────────
