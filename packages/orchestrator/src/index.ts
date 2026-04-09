@@ -15,7 +15,7 @@ export { StateMachine } from "./state-machine.js";
 export { EventBus } from "./ws-server.js";
 export { LearningPipeline } from "./learning.js";
 export * from "./types.js";
-export { buildBlockedByMap, topologicalSort, getReadyTasks, getDependents, validateDAG } from "./dag.js";
+export { buildBlockedByMap, getDependents, validateDAG } from "./dag.js";
 
 // ── CLI Argument Parsing ──────────────────────────────────────
 

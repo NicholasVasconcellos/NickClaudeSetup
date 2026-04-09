@@ -6,7 +6,7 @@ import { ClaudeRunner } from "./claude.js";
 import { StateMachine } from "./state-machine.js";
 import { EventBus } from "./ws-server.js";
 import { LearningPipeline } from "./learning.js";
-import { buildBlockedByMap, getDependents, validateDAG } from "./dag.js";
+import { buildBlockedByMap, validateDAG } from "./dag.js";
 
 import type {
   OrchestratorConfig,
@@ -32,6 +32,7 @@ export class Runner {
   private sessionId: number | null;
 
   private blockedBy: Map<number, Set<number>>;
+  private dependentsOf: Map<number, number[]>;
   private activeTasks: number;
   private readyQueue: number[];
   private runResolve: (() => void) | null;
@@ -53,6 +54,7 @@ export class Runner {
     this.paused = false;
     this.sessionId = null;
     this.blockedBy = new Map();
+    this.dependentsOf = new Map();
     this.activeTasks = 0;
     this.readyQueue = [];
     this.runResolve = null;
@@ -123,6 +125,19 @@ export class Runner {
       // Build blocked-by map (which deps still need to complete for each task)
       this.blockedBy = buildBlockedByMap(allTasks);
 
+      // Build dependents map (inverse of dependsOn) for O(1) lookup in onTaskSettled
+      this.dependentsOf = new Map();
+      for (const task of allTasks) {
+        for (const depId of task.dependsOn) {
+          let list = this.dependentsOf.get(depId);
+          if (!list) {
+            list = [];
+            this.dependentsOf.set(depId, list);
+          }
+          list.push(task.id);
+        }
+      }
+
       // Seed the ready queue with tasks that have no pending dependencies
       for (const task of allTasks) {
         const blocked = this.blockedBy.get(task.id);
@@ -181,6 +196,7 @@ export class Runner {
   // ── drainReadyQueue ─────────────────────────────────────────
 
   private drainReadyQueue(): void {
+    if (this.paused) return;
     if (this.abortController.signal.aborted) return;
 
     while (
@@ -207,25 +223,36 @@ export class Runner {
   private onTaskSettled(taskId: number): void {
     this.activeTasks--;
 
+    if (this.abortController.signal.aborted) {
+      this.checkRunComplete();
+      return;
+    }
+
     const task = this.db.getTask(taskId);
     const unblocksDeps =
       task != null && (task.state === "merged" || task.state === "done");
 
     if (unblocksDeps) {
-      const currentTasks = this.db.getAllTasks();
-      const dependents = getDependents(taskId, currentTasks);
+      const depIds = this.dependentsOf.get(taskId) ?? [];
 
-      for (const dep of dependents) {
-        const blocked = this.blockedBy.get(dep.id);
+      for (const depId of depIds) {
+        const blocked = this.blockedBy.get(depId);
         if (!blocked) continue;
         blocked.delete(taskId);
 
-        if (blocked.size === 0 && dep.state === "pending") {
-          this.events.taskUnblocked(dep.id);
-          this.readyQueue.push(dep.id);
-          console.log(`[runner] task ${dep.id} unblocked by task ${taskId}`);
+        if (blocked.size === 0) {
+          const dep = this.db.getTask(depId);
+          if (dep && dep.state === "pending") {
+            this.events.taskUnblocked(depId);
+            this.readyQueue.push(depId);
+            console.log(`[runner] task ${depId} unblocked by task ${taskId}`);
+          }
         }
       }
+    } else if (task != null && (task.state === "failed" || task.state === "skipped")) {
+      // A task has permanently failed or been skipped. Its dependents may now
+      // be permanently stranded — cascade skip to any that can never run.
+      this.cascadeSkip(taskId);
     }
 
     this.drainReadyQueue();
@@ -242,6 +269,64 @@ export class Runner {
     ) {
       this.runResolve();
       this.runResolve = null;
+    }
+  }
+
+  // ── cascadeSkip ─────────────────────────────────────────────
+
+  /**
+   * When a task ends in "failed" or "skipped", checks its dependents to see
+   * if they are now permanently blocked (every remaining blocker is in a
+   * terminal-failed/skipped state). If so, skips them and cascades further.
+   */
+  private cascadeSkip(failedTaskId: number): void {
+    const terminalBad = new Set<string>(["failed", "skipped"]);
+    const queue: number[] = [failedTaskId];
+
+    while (queue.length > 0) {
+      const sourceId = queue.shift()!;
+      const depIds = this.dependentsOf.get(sourceId) ?? [];
+
+      for (const depId of depIds) {
+        const dep = this.db.getTask(depId);
+        if (!dep) continue;
+
+        // Only consider dependents that haven't already been processed
+        if (dep.state !== "pending") continue;
+
+        // Check whether ALL remaining blockers for this dependent are
+        // in a terminal-failed/skipped state (i.e., none will ever complete).
+        const blocked = this.blockedBy.get(depId);
+        if (!blocked || blocked.size === 0) continue;
+
+        let allBlockersDead = true;
+        for (const blockerId of blocked) {
+          const blocker = this.db.getTask(blockerId);
+          if (!blocker || !terminalBad.has(blocker.state)) {
+            allBlockersDead = false;
+            break;
+          }
+        }
+
+        if (!allBlockersDead) continue;
+
+        // All blockers are permanently failed/skipped — skip this dependent
+        try {
+          this.stateMachine.skip(depId);
+          this.events.taskStateChanged(depId, dep.state, "skipped");
+          console.log(
+            `[runner] task ${depId} auto-skipped (all blockers failed/skipped)`
+          );
+
+          // Cascade: this newly-skipped task may itself have dependents
+          queue.push(depId);
+        } catch (err) {
+          console.error(
+            `[runner] failed to auto-skip task ${depId}:`,
+            err
+          );
+        }
+      }
     }
   }
 
@@ -760,6 +845,7 @@ export class Runner {
       case "run:resume_all":
         this.paused = false;
         console.log("[runner] run resumed");
+        this.drainReadyQueue();
         break;
 
       default:

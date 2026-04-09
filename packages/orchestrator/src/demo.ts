@@ -126,6 +126,7 @@ let completedCount = 0;
 let failedCount = 0;
 let skippedCount = 0;
 const failedTaskIds = new Set<number>();
+const finalStates = new Map<number, string>();
 
 // ── Simulate helpers ────────────────────────────────────────────
 
@@ -181,6 +182,7 @@ async function finishTask(bus: EventBus, task: Task): Promise<void> {
   await sleep(randInt(400, 800));
   bus.taskStateChanged(task.id, "done", "merged");
   completedCount++;
+  finalStates.set(task.id, "merged");
 }
 
 // ── Edge case simulations ──────────────────────────────────────
@@ -349,6 +351,7 @@ async function simulateMergeConflict(bus: EventBus, task: Task): Promise<void> {
 
   bus.taskStateChanged(task.id, "done", "merged");
   completedCount++;
+  finalStates.set(task.id, "merged");
 }
 
 async function simulatePermanentFailure(bus: EventBus, task: Task, maxRetries: number): Promise<void> {
@@ -400,6 +403,7 @@ async function simulatePermanentFailure(bus: EventBus, task: Task, maxRetries: n
   bus.taskLogAppend(task.id, `  Action needed: Configure Stripe test mode and add STRIPE_TEST_KEY to .env`);
   failedCount++;
   failedTaskIds.add(task.id);
+  finalStates.set(task.id, "failed");
 }
 
 async function simulateSkipped(bus: EventBus, task: Task): Promise<void> {
@@ -407,6 +411,7 @@ async function simulateSkipped(bus: EventBus, task: Task): Promise<void> {
   bus.taskLogAppend(task.id, "⊘ Skipped — dependency task #10 (payment processing) failed.");
   bus.taskLogAppend(task.id, "  Monitoring alerts depend on payment flow metrics being available.");
   skippedCount++;
+  finalStates.set(task.id, "skipped");
 }
 
 // ── Main task dispatcher ────────────────────────────────────────
@@ -480,8 +485,8 @@ async function main(): Promise<void> {
   await new Promise<void>((runResolve) => {
     function onTaskSettled(taskId: number): void {
       activeTasks--;
-      const edge = EDGE_CASES[taskId] ?? { type: "normal" };
-      const didComplete = edge.type !== "permanent_failure" && edge.type !== "skipped";
+      const state = finalStates.get(taskId);
+      const didComplete = state === "merged" || state === "done";
 
       if (didComplete) {
         const dependents = getDependents(taskId, tasks);
