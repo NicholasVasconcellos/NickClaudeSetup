@@ -103,6 +103,69 @@ export class GitManager {
     }
   }
 
+  /**
+   * Returns context for a merge-conflict resolution agent: the commits on each
+   * side since they diverged, plus the raw conflict diff.  Call this BEFORE
+   * aborting the merge so the working tree still contains conflict markers.
+   */
+  async getConflictContext(taskId: number): Promise<string> {
+    const branch = this.branchName(taskId);
+    const sections: string[] = [];
+
+    // Merge-base so the agent understands the fork point
+    try {
+      const { stdout } = await this.exec(["merge-base", this.mainBranch, branch]);
+      sections.push(`## Merge base\n${stdout}`);
+    } catch { /* best-effort */ }
+
+    // Commits on the task branch since it diverged from main
+    try {
+      const { stdout } = await this.exec([
+        "log", "--oneline", `${this.mainBranch}..${branch}`,
+      ]);
+      sections.push(`## Commits on task branch (${branch})\n${stdout || "(none)"}`);
+    } catch { /* best-effort */ }
+
+    // Commits on main since the task branch diverged
+    try {
+      const { stdout } = await this.exec([
+        "log", "--oneline", `${branch}..${this.mainBranch}`,
+      ]);
+      sections.push(`## Commits on ${this.mainBranch} since branch point\n${stdout || "(none)"}`);
+    } catch { /* best-effort */ }
+
+    // The actual conflict diff (working tree with markers)
+    try {
+      const { stdout } = await this.exec(["diff"]);
+      sections.push(`## Conflict diff\n\`\`\`diff\n${stdout}\n\`\`\``);
+    } catch { /* best-effort */ }
+
+    // List of conflicted files
+    try {
+      const { stdout } = await this.exec(["diff", "--name-only", "--diff-filter=U"]);
+      sections.push(`## Conflicted files\n${stdout || "(none)"}`);
+    } catch { /* best-effort */ }
+
+    return sections.join("\n\n");
+  }
+
+  /**
+   * After the agent resolves conflicts, stage everything and complete the
+   * merge commit.  Returns true if the commit succeeds.
+   */
+  async stageAndCommitMerge(taskId: number): Promise<boolean> {
+    try {
+      await this.exec(["add", "-A"]);
+      await this.exec([
+        "commit",
+        "--no-edit",  // reuse the merge commit message git already prepared
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async push(): Promise<void> {
     await this.exec(["push", "origin", this.mainBranch]);
   }

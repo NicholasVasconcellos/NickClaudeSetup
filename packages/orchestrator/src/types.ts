@@ -11,7 +11,7 @@ export type TaskState =
   | "skipped"
   | "paused";
 
-export type TaskPhase = "spec" | "execute" | "review";
+export type TaskPhase = "spec" | "execute" | "review" | "merge";
 
 // ── Core Entities ────────────────────────────────────────────
 
@@ -160,6 +160,7 @@ export interface OrchestratorConfig {
     spec: string;
     execute: string;
     review: string;
+    merge: string;
     learning: string;
   };
 }
@@ -177,6 +178,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     spec: "claude-sonnet-4-6",
     execute: "claude-sonnet-4-6",
     review: "claude-sonnet-4-6",
+    merge: "claude-opus-4-6",
     learning: "claude-haiku-4-5-20251001",
   },
 };

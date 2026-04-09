@@ -424,29 +424,50 @@ export class Runner {
       this.events.taskStateChanged(taskId, oldState, "merged");
       console.log(`[task:${taskId}] merged successfully`);
     } else {
-      // Merge conflict — attempt to abort and mark as failed
-      console.error(
+      // Merge conflict — spawn an agent to resolve it before giving up.
+      // The working tree still has conflict markers at this point.
+      console.warn(
         `[task:${taskId}] merge conflict in: ${conflicts.join(", ") || "(unknown files)"}`
       );
 
-      try {
-        await this.git.abortMerge();
-      } catch (abortErr) {
-        console.warn(`[task:${taskId}] merge abort failed:`, abortErr);
-      }
-
       this.db.recordMerge(taskId, "conflict", false);
 
-      this.learning.capture(
-        taskId,
-        "review",
-        `Merge conflict in files: ${conflicts.join(", ")}`
-      );
+      const resolved = await this._attemptConflictResolution(taskId, conflicts);
 
-      this.stateMachine.fail(taskId);
-      const updatedTask = this.db.getTask(taskId);
-      const newState = updatedTask?.state ?? "failed";
-      this.events.taskStateChanged(taskId, "done", newState);
+      if (resolved) {
+        this.db.recordMerge(taskId, "success", true);
+
+        if (this.config.pushAfterMerge) {
+          try {
+            await this.git.push();
+            console.log(`[task:${taskId}] pushed to remote`);
+          } catch (pushErr) {
+            console.warn(`[task:${taskId}] push failed (non-fatal):`, pushErr);
+          }
+        }
+
+        const oldState = this.stateMachine.transition(taskId, "merged");
+        this.events.taskStateChanged(taskId, oldState, "merged");
+        console.log(`[task:${taskId}] merge conflict resolved and merged`);
+      } else {
+        // Agent couldn't resolve — abort merge and fail the task
+        try {
+          await this.git.abortMerge();
+        } catch (abortErr) {
+          console.warn(`[task:${taskId}] merge abort failed:`, abortErr);
+        }
+
+        this.learning.capture(
+          taskId,
+          "merge",
+          `Merge conflict in files: ${conflicts.join(", ")} — automatic resolution failed`
+        );
+
+        this.stateMachine.fail(taskId);
+        const updatedTask = this.db.getTask(taskId);
+        const newState = updatedTask?.state ?? "failed";
+        this.events.taskStateChanged(taskId, "done", newState);
+      }
     }
 
     // Clean up worktree now that merge is settled
@@ -454,6 +475,94 @@ export class Runner {
       console.warn(`[task:${taskId}] post-merge worktree cleanup failed:`, e);
     });
     this.db.updateTaskWorktree(taskId, null, null);
+  }
+
+  // ── _attemptConflictResolution ─────────────────────────────
+
+  /**
+   * Spawns a Claude agent to resolve merge conflicts in the working tree.
+   * Called while the merge is still in a conflicted state (markers present).
+   * Returns true if the agent resolved the conflicts and committed.
+   */
+  private async _attemptConflictResolution(
+    taskId: number,
+    conflicts: string[]
+  ): Promise<boolean> {
+    const phase: TaskPhase = "merge";
+    const model = this.config.models.merge;
+
+    console.log(
+      `[task:${taskId}] spawning merge-resolution agent for: ${conflicts.join(", ")}`
+    );
+
+    this.events.agentStarted(taskId, phase, model);
+    const runId = this.db.startAgentRun(taskId, phase, model);
+
+    // Gather context: branch logs + conflict diff
+    let context: string;
+    try {
+      context = await this.git.getConflictContext(taskId);
+    } catch (err) {
+      console.warn(`[task:${taskId}] failed to gather conflict context:`, err);
+      context = `Conflicted files: ${conflicts.join(", ")}`;
+    }
+
+    const prompt =
+      `## Merge Conflict Resolution — Task #${taskId}\n\n` +
+      `A merge from branch task/${taskId} into ${this.config.mainBranch} has produced conflicts.\n` +
+      `The working tree contains conflict markers that you must resolve.\n\n` +
+      `${context}\n\n` +
+      `## Instructions\n` +
+      `1. Read each conflicted file and understand the intent of BOTH sides.\n` +
+      `2. Resolve every conflict — remove all <<<<<<< / ======= / >>>>>>> markers.\n` +
+      `3. The result must preserve the intent of both the task branch and the main branch changes.\n` +
+      `4. Do NOT delete functionality from either side unless it is truly redundant.\n` +
+      `5. After resolving, run any available tests to verify nothing is broken.\n` +
+      `6. Do NOT commit — the orchestrator will handle staging and committing.`;
+
+    const result = await this.claude.runTask({
+      prompt,
+      cwd: this.config.projectDir,
+      model,
+      timeout: this.config.taskTimeout,
+      signal: this.abortController.signal,
+      onOutput: (line) => {
+        this.db.appendLog(taskId, phase, line);
+        this.events.taskLogAppend(taskId, line);
+      },
+    });
+
+    this.db.finishAgentRun(
+      runId,
+      result.tokensIn,
+      result.tokensOut,
+      result.cost,
+      result.duration
+    );
+    this.events.agentFinished(
+      taskId,
+      phase,
+      result.tokensIn + result.tokensOut,
+      result.cost
+    );
+
+    if (result.exitCode !== 0) {
+      console.error(
+        `[task:${taskId}] merge-resolution agent failed (exit ${result.exitCode})`
+      );
+      return false;
+    }
+
+    // Agent finished — try to stage and commit the resolved merge
+    const committed = await this.git.stageAndCommitMerge(taskId);
+    if (!committed) {
+      console.error(
+        `[task:${taskId}] merge-resolution agent ran but commit failed (unresolved markers?)`
+      );
+      return false;
+    }
+
+    return true;
   }
 
   // ── buildPrompt ───────────────────────────────────────────
@@ -501,6 +610,10 @@ export class Runner {
           `TypeScript types are sound, and linting passes. ` +
           `Do not add new features — only clean up and fix.`
         );
+
+      case "merge":
+        // Merge prompts are built inline in _attemptConflictResolution
+        return `${baseSection}\n\n## Instructions\nResolve merge conflicts.`;
     }
   }
 
