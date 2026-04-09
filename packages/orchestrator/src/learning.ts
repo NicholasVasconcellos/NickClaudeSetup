@@ -131,9 +131,9 @@ export class LearningPipeline {
 
     const prompt = `You are reviewing learnings captured from an automated task execution system. Below are raw error notes and observations from a run.
 
-Produce a concise, actionable summary formatted as markdown:
+Produce a concise, actionable summary in plain text (no markdown formatting — no #, *, **, or - list prefixes):
 1. A short overview paragraph (2-3 sentences) of what went wrong and any patterns
-2. A bullet list of key takeaways — each should be a specific, actionable insight
+2. A few key takeaways as plain numbered sentences — each should be a specific, actionable insight
 3. If any learnings are noise or too generic to act on, omit them silently
 
 Keep it concise and useful. No preamble, no sign-off — just the summary.

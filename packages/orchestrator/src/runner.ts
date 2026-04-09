@@ -260,8 +260,9 @@ export class Runner {
       this.events.notify(msg, "error");
       console.error(`[runner] ${msg}`);
       this.abortController.abort();
-    } else if (task && task.state === "pending") {
-      // Rewound for retry — re-enqueue
+    } else if (task && task.state === "pending" && !this.abortController.signal.aborted) {
+      // Rewound for retry — re-enqueue (guard abort so a concurrent failure doesn't
+      // sneak a retry into the queue after the workflow has been stopped)
       this.readyQueue.push(taskId);
       console.log(
         `[runner] task ${taskId} re-enqueued for retry (${task.retryCount}/${task.maxRetries})`
@@ -284,7 +285,7 @@ export class Runner {
 
   // ── runPhase ─────────────────────────────────────────────
 
-  private static readonly PHASE_STATE: Record<string, TaskState> = {
+  private static readonly PHASE_STATE: Record<TaskPhase, TaskState> = {
     spec: "spec",
     execute: "executing",
     review: "reviewing",
@@ -303,8 +304,8 @@ export class Runner {
     this.events.taskStateChanged(taskId, oldState, targetState);
     this.events.agentStarted(taskId, phase, model);
 
-    const task = this.db.getTask(taskId)!;
     const runId = this.db.startAgentRun(taskId, phase, model);
+    const task = this.db.getTask(taskId)!;
     const prompt = this.buildPrompt(task, phase);
 
     const result = await this.claude.runTask({
