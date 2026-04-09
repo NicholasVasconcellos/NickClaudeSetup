@@ -119,8 +119,7 @@ export class StateMachine {
 
   /**
    * Handles task failure:
-   * - If retries remain: increments retry count and moves back to the
-   *   beginning of the current phase (the state that matches the phase).
+   * - If retries remain: increments retry count, rewinds to "pending".
    * - If no retries: transitions to "failed".
    */
   fail(taskId: number): void {
@@ -130,15 +129,8 @@ export class StateMachine {
     }
 
     if (task.retryCount < task.maxRetries) {
-      // Increment retry count first, then rewind to start of current phase.
       this.db.incrementRetry(taskId);
-
-      // Determine the state to rewind to. If the task has a phase, rewind
-      // to the state that corresponds to that phase; otherwise rewind to
-      // "pending" so a fresh run can re-spec the task.
-      const rewindState = this.getStateForPhase(task.phase) ?? "pending";
-      const rewindPhase = task.phase ?? null;
-      this.db.updateTaskState(taskId, rewindState, rewindPhase ?? undefined);
+      this.db.updateTaskState(taskId, "pending", null);
     } else {
       this.transition(taskId, "failed");
     }
@@ -195,17 +187,5 @@ export class StateMachine {
 
   private isValidTransition(from: TaskState, to: TaskState): boolean {
     return TRANSITIONS[from]?.has(to) ?? false;
-  }
-
-  /**
-   * Reverse of getPhaseForState — maps a phase back to the state that
-   * represents the beginning of that phase (used by fail() to rewind).
-   */
-  private getStateForPhase(phase: TaskPhase | null): TaskState | null {
-    if (phase === null) return null;
-    for (const [state, p] of Object.entries(STATE_TO_PHASE) as [TaskState, TaskPhase][]) {
-      if (p === phase) return state;
-    }
-    return null;
   }
 }

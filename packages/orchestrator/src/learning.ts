@@ -7,21 +7,6 @@ import type { ClaudeRunner } from "./claude.js";
 
 // ── Helpers ───────────────────────────────────────────────────
 
-const BATCH_SIZE = 10;
-
-const VALID_SKILL_TARGETS = new Set([
-  "get-tasks",
-  "spec",
-  "execute",
-  "review",
-  "general",
-]);
-
-function normaliseSkillTarget(raw: string): string {
-  const trimmed = raw.trim().toLowerCase();
-  return VALID_SKILL_TARGETS.has(trimmed) ? trimmed : "general";
-}
-
 /**
  * Extract the text content from a Claude CLI JSON result.
  * The `--output-format json` envelope wraps the assistant reply in a `result`
@@ -46,17 +31,6 @@ function extractText(stdout: string): string {
     // ignore
   }
   return stdout;
-}
-
-/**
- * Chunk an array into groups of at most `size` elements.
- */
-function chunk<T>(arr: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    result.push(arr.slice(i, i + size));
-  }
-  return result;
 }
 
 // ── LearningPipeline ──────────────────────────────────────────
@@ -101,43 +75,72 @@ export class LearningPipeline {
     return this.capture(taskId, phase, rawNote);
   }
 
-  // ── Stage 2: Translate ──────────────────────────────────────
+  // ── Stage 2: Compile ────────────────────────────────────────
 
   /**
-   * Convert unprocessed raw notes into actionable rules via Claude.
-   * Returns the count of successfully translated learnings.
+   * Compile all raw learnings into a single markdown file.
+   * Returns the file path written, or null if no learnings exist.
    */
-  async translate(): Promise<number> {
-    try {
-      const all = this.db.getUnprocessedLearnings();
-      // Only translate rows that have not yet been through translate
-      // (actionableStep is null means they haven't been translated yet)
-      const untranslated = all.filter((l) => l.actionableStep === null);
-      if (untranslated.length === 0) return 0;
+  compileLearnings(outputDir: string): string | null {
+    const all = this.db.getAllLearnings();
+    if (all.length === 0) return null;
 
-      let translated = 0;
+    fs.mkdirSync(outputDir, { recursive: true });
 
-      for (const batch of chunk(untranslated, BATCH_SIZE)) {
-        const count = await this._translateBatch(batch);
-        translated += count;
-      }
+    const lines = [
+      "# Raw Learnings",
+      "",
+      `> ${all.length} learning(s) captured during this run.`,
+      "",
+    ];
 
-      return translated;
-    } catch (err) {
-      console.error("[learning] translate failed:", err);
-      return 0;
+    // Group by task for readability
+    const byTask = new Map<number, Learning[]>();
+    for (const l of all) {
+      const list = byTask.get(l.taskId) ?? [];
+      list.push(l);
+      byTask.set(l.taskId, list);
     }
+
+    for (const [taskId, learnings] of byTask) {
+      lines.push(`## Task #${taskId}`);
+      lines.push("");
+      for (const l of learnings) {
+        lines.push(`- **[${l.phase}]** ${l.rawNote}`);
+      }
+      lines.push("");
+    }
+
+    const filePath = path.join(outputDir, "learnings-raw.md");
+    fs.writeFileSync(filePath, lines.join("\n"), "utf8");
+    return filePath;
   }
 
-  private async _translateBatch(learnings: Learning[]): Promise<number> {
-    const prompt = `You are analyzing learnings from an automated task execution system. For each raw note below, produce:
-1. An actionable rule or tip (1-2 sentences, imperative mood)
-2. Which skill file this should be added to: get-tasks, spec, execute, review, or general
+  // ── Stage 3: Summarize ──────────────────────────────────────
 
-Raw learnings:
-${learnings.map((l) => `- [Task ${l.taskId}, ${l.phase}]: ${l.rawNote}`).join("\n")}
+  /**
+   * Send the raw learnings to Claude for a condensed summary.
+   * Writes the summary to `learnings-summary.md` and returns the content.
+   */
+  async summarizeLearnings(outputDir: string): Promise<string | null> {
+    const rawPath = path.join(outputDir, "learnings-raw.md");
+    if (!fs.existsSync(rawPath)) return null;
 
-Respond as JSON array: [{ "id": number, "actionableStep": string, "skillTarget": string }]`;
+    const rawContent = fs.readFileSync(rawPath, "utf8");
+    if (!rawContent.trim()) return null;
+
+    const prompt = `You are reviewing learnings captured from an automated task execution system. Below are raw error notes and observations from a run.
+
+Produce a concise, actionable summary formatted as markdown:
+1. A short overview paragraph (2-3 sentences) of what went wrong and any patterns
+2. A bullet list of key takeaways — each should be a specific, actionable insight
+3. If any learnings are noise or too generic to act on, omit them silently
+
+Keep it concise and useful. No preamble, no sign-off — just the summary.
+
+---
+
+${rawContent}`;
 
     let result;
     try {
@@ -147,278 +150,61 @@ Respond as JSON array: [{ "id": number, "actionableStep": string, "skillTarget":
         model: this.config.models.learning,
       });
     } catch (err) {
-      console.error("[learning] translate Claude invocation failed:", err);
-      return 0;
+      console.error("[learning] summarize: Claude invocation failed:", err);
+      return null;
     }
 
     if (result.exitCode !== 0) {
       console.error(
-        "[learning] translate: Claude exited with code",
+        "[learning] summarize: Claude exited with code",
         result.exitCode,
         result.stderr
       );
-      return 0;
+      return null;
     }
 
-    const text = extractText(result.stdout);
+    const summaryText = extractText(result.stdout).trim();
+    if (!summaryText) return null;
 
-    let parsed: Array<{ id: number; actionableStep: string; skillTarget: string }>;
-    try {
-      // Extract JSON array from the response (may be wrapped in markdown code fences)
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) throw new Error("No JSON array found in response");
-      parsed = JSON.parse(jsonMatch[0]) as typeof parsed;
-    } catch (err) {
-      console.error("[learning] translate: failed to parse Claude response:", err);
-      return 0;
-    }
+    fs.mkdirSync(outputDir, { recursive: true });
+    const summaryPath = path.join(outputDir, "learnings-summary.md");
+    fs.writeFileSync(summaryPath, summaryText, "utf8");
 
-    let count = 0;
-    for (const item of parsed) {
-      if (
-        typeof item.id !== "number" ||
-        typeof item.actionableStep !== "string" ||
-        typeof item.skillTarget !== "string"
-      ) {
-        continue;
-      }
-      try {
-        // Mark as translated but not yet validated
-        this.db.updateLearning(
-          item.id,
-          item.actionableStep.trim(),
-          false,
-          normaliseSkillTarget(item.skillTarget)
-        );
-        count++;
-      } catch (err) {
-        console.error(`[learning] translate: updateLearning(${item.id}) failed:`, err);
-      }
-    }
-
-    return count;
-  }
-
-  // ── Stage 3: Validate ───────────────────────────────────────
-
-  /**
-   * Validate translated-but-not-yet-validated learnings.
-   * Returns the count of learnings marked as validated.
-   */
-  async validate(): Promise<number> {
-    try {
-      const all = this.db.getUnprocessedLearnings();
-      // Translated but not yet validated: actionableStep is set, validated is false
-      const toValidate = all.filter((l) => l.actionableStep !== null);
-      if (toValidate.length === 0) return 0;
-
-      let validated = 0;
-
-      for (const batch of chunk(toValidate, BATCH_SIZE)) {
-        const count = await this._validateBatch(batch);
-        validated += count;
-      }
-
-      return validated;
-    } catch (err) {
-      console.error("[learning] validate failed:", err);
-      return 0;
-    }
-  }
-
-  private async _validateBatch(learnings: Learning[]): Promise<number> {
-    const prompt = `You are validating actionable learnings captured from an automated task execution system.
-
-For each learning below, decide:
-1. Is this actually useful? (not noise or too generic)
-2. Does it contradict known best practices?
-3. Is it specific enough to act on?
-
-Mark "keep": true only if the learning passes all three criteria.
-
-Learnings:
-${learnings
-  .map(
-    (l) =>
-      `- id: ${l.id}, skill: ${l.skillTarget ?? "general"}\n  Rule: ${l.actionableStep}`
-  )
-  .join("\n")}
-
-Respond as JSON array: [{ "id": number, "keep": boolean, "reason": string }]`;
-
-    let result;
-    try {
-      result = await this.claude.runTask({
-        prompt,
-        cwd: this.config.projectDir,
-        model: this.config.models.learning,
-      });
-    } catch (err) {
-      console.error("[learning] validate Claude invocation failed:", err);
-      return 0;
-    }
-
-    if (result.exitCode !== 0) {
-      console.error(
-        "[learning] validate: Claude exited with code",
-        result.exitCode,
-        result.stderr
-      );
-      return 0;
-    }
-
-    const text = extractText(result.stdout);
-
-    let parsed: Array<{ id: number; keep: boolean; reason: string }>;
-    try {
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) throw new Error("No JSON array found in response");
-      parsed = JSON.parse(jsonMatch[0]) as typeof parsed;
-    } catch (err) {
-      console.error("[learning] validate: failed to parse Claude response:", err);
-      return 0;
-    }
-
-    let count = 0;
-    for (const item of parsed) {
-      if (typeof item.id !== "number" || typeof item.keep !== "boolean") {
-        continue;
-      }
-      const learning = learnings.find((l) => l.id === item.id);
-      if (!learning || learning.actionableStep === null) continue;
-
-      if (item.keep) {
-        try {
-          this.db.updateLearning(
-            item.id,
-            learning.actionableStep,
-            true,
-            learning.skillTarget ?? "general"
-          );
-          count++;
-        } catch (err) {
-          console.error(`[learning] validate: updateLearning(${item.id}) failed:`, err);
-        }
-      } else {
-        // Discard: mark as validated=true with a note that it was discarded,
-        // but drop it so it doesn't re-enter the queue.  We reuse the same
-        // update path; callers of getAllLearnings will see validated=true.
-        try {
-          this.db.updateLearning(
-            item.id,
-            learning.actionableStep,
-            true,          // consume it so it leaves the unprocessed queue
-            "__discarded"  // special sentinel — applyToSkills will skip it
-          );
-        } catch {
-          // best-effort discard
-        }
-      }
-    }
-
-    return count;
-  }
-
-  // ── Apply to skills ─────────────────────────────────────────
-
-  /**
-   * Append validated learnings to the matching skill files under `skillsDir`.
-   * Creates a "## Learnings" section if one doesn't already exist.
-   * Returns the count of learnings written to disk.
-   */
-  async applyToSkills(skillsDir: string): Promise<number> {
-    try {
-      const all = this.db.getAllLearnings();
-      const validated = all.filter(
-        (l) =>
-          l.validated &&
-          l.actionableStep !== null &&
-          l.skillTarget !== null &&
-          l.skillTarget !== "__discarded"
-      );
-
-      if (validated.length === 0) return 0;
-
-      // Group by skillTarget
-      const byTarget = new Map<string, Learning[]>();
-      for (const l of validated) {
-        const target = l.skillTarget!;
-        const existing = byTarget.get(target) ?? [];
-        existing.push(l);
-        byTarget.set(target, existing);
-      }
-
-      let applied = 0;
-
-      for (const [target, learnings] of byTarget) {
-        const filePath = path.join(skillsDir, `${target}.md`);
-        const newLines = learnings
-          .map((l) => `- ${l.actionableStep!.trim()}`)
-          .join("\n");
-
-        try {
-          let content: string;
-
-          if (fs.existsSync(filePath)) {
-            content = fs.readFileSync(filePath, "utf8");
-          } else {
-            // Create a minimal stub if the file doesn't exist
-            content = `# ${target}\n`;
-          }
-
-          if (content.includes("## Learnings")) {
-            // Append after the last line of the existing Learnings section
-            content = content.trimEnd() + "\n" + newLines + "\n";
-          } else {
-            // Add the section at the end
-            content = content.trimEnd() + "\n\n## Learnings\n" + newLines + "\n";
-          }
-
-          fs.writeFileSync(filePath, content, "utf8");
-          applied += learnings.length;
-        } catch (err) {
-          console.error(`[learning] applyToSkills: failed to write ${filePath}:`, err);
-        }
-      }
-
-      return applied;
-    } catch (err) {
-      console.error("[learning] applyToSkills failed:", err);
-      return 0;
-    }
+    return summaryText;
   }
 
   // ── Full pipeline ───────────────────────────────────────────
 
   /**
-   * Run the full Capture → Translate → Validate → Apply pipeline.
+   * Run the full Capture → Compile → Summarize pipeline.
    * Called at end-of-run.  Never throws.
+   * Returns the summary text (or null if nothing to summarize).
    */
   async runPipeline(
-    skillsDir: string
-  ): Promise<{ translated: number; validated: number; applied: number }> {
-    let translated = 0;
-    let validated = 0;
-    let applied = 0;
+    outputDir: string
+  ): Promise<{ count: number; summary: string | null }> {
+    const all = this.db.getAllLearnings();
+    const count = all.length;
+
+    if (count === 0) {
+      return { count: 0, summary: null };
+    }
+
+    let summary: string | null = null;
 
     try {
-      translated = await this.translate();
+      this.compileLearnings(outputDir);
     } catch (err) {
-      console.error("[learning] runPipeline: translate stage failed:", err);
+      console.error("[learning] runPipeline: compile stage failed:", err);
+      return { count, summary: null };
     }
 
     try {
-      validated = await this.validate();
+      summary = await this.summarizeLearnings(outputDir);
     } catch (err) {
-      console.error("[learning] runPipeline: validate stage failed:", err);
+      console.error("[learning] runPipeline: summarize stage failed:", err);
     }
 
-    try {
-      applied = await this.applyToSkills(skillsDir);
-    } catch (err) {
-      console.error("[learning] runPipeline: applyToSkills stage failed:", err);
-    }
-
-    return { translated, validated, applied };
+    return { count, summary };
   }
 }

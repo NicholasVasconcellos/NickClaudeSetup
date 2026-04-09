@@ -110,4 +110,8 @@ export class EventBus {
   runCompleted(summary: RunSummary): void {
     this.broadcast({ type: "run:completed", summary });
   }
+
+  notify(message: string, level: "info" | "warning" | "error"): void {
+    this.broadcast({ type: "run:notification", message, level });
+  }
 }

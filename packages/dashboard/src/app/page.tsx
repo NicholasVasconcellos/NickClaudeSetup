@@ -279,6 +279,43 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
+
+          {/* Learnings Summary (shown when available) */}
+          {summary?.learningSummary && (
+            <div
+              style={{
+                backgroundColor: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 16,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  color: "var(--text-muted)",
+                  marginBottom: 12,
+                }}
+              >
+                Learnings
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  color: "var(--text-secondary)",
+                  whiteSpace: "pre-wrap",
+                  overflowY: "auto",
+                  maxHeight: 300,
+                }}
+              >
+                {summary.learningSummary}
+              </div>
+            </div>
+          )}
         </aside>
       </div>
     </div>

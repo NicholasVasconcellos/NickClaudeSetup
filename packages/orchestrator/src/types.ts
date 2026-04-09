@@ -127,7 +127,8 @@ export type WSEventFromServer =
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number }
   | { type: "task:unblocked"; taskId: number }
-  | { type: "run:completed"; summary: RunSummary };
+  | { type: "run:completed"; summary: RunSummary }
+  | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };
 
 export type WSEventFromClient =
   | { type: "task:pause"; taskId: number }
@@ -171,7 +172,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     execute: "claude-sonnet-4-6",
     review: "claude-sonnet-4-6",
     merge: "claude-opus-4-6",
-    learning: "claude-haiku-4-5-20251001",
+    learning: "claude-opus-4-6",
   },
 };
 
@@ -188,6 +189,8 @@ export interface RunSummary {
   totalTokensOut: number;
   duration: number;
   learnings: number;
+  learningSummary: string | null;
+  notifications: string[];
 }
 
 // ── Claude CLI Output ────────────────────────────────────────

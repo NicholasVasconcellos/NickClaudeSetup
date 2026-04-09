@@ -332,26 +332,6 @@ export class Database {
     return info.lastInsertRowid as number;
   }
 
-  updateLearning(
-    id: number,
-    actionableStep: string,
-    validated: boolean,
-    skillTarget: string
-  ): void {
-    this.db
-      .prepare(
-        "UPDATE learnings SET actionable_step = ?, validated = ?, skill_target = ? WHERE id = ?"
-      )
-      .run(actionableStep, validated ? 1 : 0, skillTarget, id);
-  }
-
-  getUnprocessedLearnings(): Learning[] {
-    const rows = this.db
-      .prepare("SELECT * FROM learnings WHERE validated = 0 ORDER BY id")
-      .all() as LearningRow[];
-    return rows.map(learningRowToLearning);
-  }
-
   getAllLearnings(): Learning[] {
     const rows = this.db
       .prepare("SELECT * FROM learnings ORDER BY id")

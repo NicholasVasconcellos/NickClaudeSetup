@@ -3,7 +3,7 @@
  * demo.ts -- Simulate an orchestrator run with realistic edge cases.
  *
  * Showcases: normal flow, test failures + retries, timeouts,
- * review rejections, merge conflicts, skipped tasks, and permanent failures.
+ * review rejections, merge conflicts, and permanent failures (workflow abort).
  *
  * Usage:
  *   npx tsx packages/orchestrator/src/demo.ts
@@ -36,8 +36,7 @@ type EdgeCase =
   | { type: "spec_timeout_retry" }                           // spec times out, retry succeeds
   | { type: "review_rejection" }                             // review finds issue, back to execute, re-review passes
   | { type: "merge_conflict" }                               // merge conflict, auto-resolved
-  | { type: "permanent_failure"; failCount: number }         // fails maxRetries times, marked failed
-  | { type: "skipped" };                                     // dependency failed, this gets skipped
+  | { type: "permanent_failure"; failCount: number };        // fails maxRetries times, workflow aborts
 
 // Map task IDs to their edge case behavior
 const EDGE_CASES: Record<number, EdgeCase> = {
@@ -54,7 +53,7 @@ const EDGE_CASES: Record<number, EdgeCase> = {
   11: { type: "merge_conflict" },
   12: { type: "normal" },
   13: { type: "normal" },
-  14: { type: "skipped" },
+  14: { type: "normal" },
 };
 
 // ── Phase log lines ────────────────────────────────────────────
@@ -124,7 +123,7 @@ let totalTokensOut = 0;
 let totalCost = 0;
 let completedCount = 0;
 let failedCount = 0;
-let skippedCount = 0;
+const notifications: string[] = [];
 const failedTaskIds = new Set<number>();
 const finalStates = new Map<number, string>();
 
@@ -406,14 +405,6 @@ async function simulatePermanentFailure(bus: EventBus, task: Task, maxRetries: n
   finalStates.set(task.id, "failed");
 }
 
-async function simulateSkipped(bus: EventBus, task: Task): Promise<void> {
-  bus.taskStateChanged(task.id, "pending", "skipped");
-  bus.taskLogAppend(task.id, "⊘ Skipped — dependency task #10 (payment processing) failed.");
-  bus.taskLogAppend(task.id, "  Monitoring alerts depend on payment flow metrics being available.");
-  skippedCount++;
-  finalStates.set(task.id, "skipped");
-}
-
 // ── Main task dispatcher ────────────────────────────────────────
 
 async function simulateTask(bus: EventBus, task: Task): Promise<void> {
@@ -437,8 +428,6 @@ async function simulateTask(bus: EventBus, task: Task): Promise<void> {
       return simulateMergeConflict(bus, task);
     case "permanent_failure":
       return simulatePermanentFailure(bus, task, edge.failCount);
-    case "skipped":
-      return simulateSkipped(bus, task);
   }
 }
 
@@ -451,7 +440,7 @@ async function main(): Promise<void> {
   console.log(chalk.bold.magenta("\n  Orchestrator Demo Mode"));
   console.log(chalk.gray(`  DB:   ${dbPath}`));
   console.log(chalk.gray(`  WS:   ws://localhost:${wsPort}`));
-  console.log(chalk.gray("  Edge cases: retry, timeout, review rejection, merge conflict, failure, skip\n"));
+  console.log(chalk.gray("  Edge cases: retry, timeout, review rejection, merge conflict, permanent failure\n"));
 
   const { db, tasks, sessionId } = seedDatabase(dbPath);
   console.log(chalk.green(`  Seeded ${tasks.length} tasks, session #${sessionId}`));
@@ -482,13 +471,21 @@ async function main(): Promise<void> {
 
   console.log(chalk.cyan(`  ${readyQueue.length} initially ready, ${tasks.length} total\n`));
 
+  let aborted = false;
+
   await new Promise<void>((runResolve) => {
     function onTaskSettled(taskId: number): void {
       activeTasks--;
       const state = finalStates.get(taskId);
-      const didComplete = state === "merged" || state === "done";
 
-      if (didComplete) {
+      if (state === "failed") {
+        // Permanent failure — stop the entire workflow
+        const msg = `Workflow stopped: task #${taskId} failed after exhausting retries`;
+        notifications.push(msg);
+        bus.notify(msg, "error");
+        console.log(chalk.red(`\n  ✗ ${msg}`));
+        aborted = true;
+      } else if (state === "merged" || state === "done") {
         const dependents = getDependents(taskId, tasks);
         for (const dep of dependents) {
           const blocked = blockedBy.get(dep.id);
@@ -505,9 +502,9 @@ async function main(): Promise<void> {
         }
       }
 
-      drainQueue();
+      if (!aborted) drainQueue();
 
-      if (activeTasks === 0 && readyQueue.length === 0) {
+      if (activeTasks === 0 && (readyQueue.length === 0 || aborted)) {
         runResolve();
       }
     }
@@ -527,17 +524,23 @@ async function main(): Promise<void> {
 
   const duration = Date.now() - startTime;
 
+  const skipped = 0; // Tasks are never auto-skipped; workflow aborts on failure
+
   const summary: RunSummary = {
     sessionId,
     totalTasks: tasks.length,
     completed: completedCount,
     failed: failedCount,
-    skipped: skippedCount,
+    skipped,
     totalCost: parseFloat(totalCost.toFixed(4)),
     totalTokensIn,
     totalTokensOut,
     duration,
     learnings: failedCount * 2 + 1,
+    learningSummary: failedCount > 0
+      ? "Several tasks failed during execution, primarily due to timeout and dependency resolution issues.\n\n- Check task timeout configuration for long-running operations\n- Ensure all dependencies are installed before execution phase\n- Review merge conflict resolution for tasks modifying shared files"
+      : null,
+    notifications,
   };
 
   bus.runCompleted(summary);
@@ -545,7 +548,11 @@ async function main(): Promise<void> {
   console.log(chalk.bold("  ── Run Summary ──────────────────────────────"));
   console.log(chalk.green(`  ✓ Completed : ${completedCount}`));
   if (failedCount > 0) console.log(chalk.red(`  ✗ Failed    : ${failedCount} (tasks: ${[...failedTaskIds].map(id => `#${id}`).join(", ")})`));
-  if (skippedCount > 0) console.log(chalk.yellow(`  ⊘ Skipped   : ${skippedCount}`));
+  if (aborted) console.log(chalk.yellow(`  ⊘ Aborted   : workflow stopped due to permanent failure`));
+  if (notifications.length > 0) {
+    console.log(chalk.red(`  Notifications:`));
+    for (const n of notifications) console.log(chalk.red(`    - ${n}`));
+  }
   console.log(chalk.gray(`  Duration    : ${(duration / 1000).toFixed(1)}s`));
   console.log(chalk.gray(`  Tokens      : ${totalTokensIn.toLocaleString()} in / ${totalTokensOut.toLocaleString()} out`));
   console.log(chalk.gray(`  Cost        : $${totalCost.toFixed(4)}`));

@@ -37,6 +37,7 @@ interface RunSummary {
   totalTokensOut: number;
   duration: number;
   learnings: number;
+  learningSummary: string | null;
 }
 
 type WSEventFromClient =

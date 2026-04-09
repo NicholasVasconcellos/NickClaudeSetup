@@ -12,6 +12,7 @@ import type {
   OrchestratorConfig,
   Task,
   TaskPhase,
+  TaskState,
   RunSummary,
   WSEventFromClient,
 } from "./types.js";
@@ -36,6 +37,7 @@ export class Runner {
   private activeTasks: number;
   private readyQueue: number[];
   private runResolve: (() => void) | null;
+  private notifications: string[];
 
   private config: OrchestratorConfig;
 
@@ -58,6 +60,7 @@ export class Runner {
     this.activeTasks = 0;
     this.readyQueue = [];
     this.runResolve = null;
+    this.notifications = [];
   }
 
   // ── init ──────────────────────────────────────────────────
@@ -103,6 +106,8 @@ export class Runner {
 
   async run(): Promise<RunSummary> {
     const runStart = Date.now();
+
+    this.notifications = [];
 
     // Create a new session record
     this.sessionId = this.db.createSession();
@@ -164,19 +169,20 @@ export class Runner {
 
     // Run the learning pipeline now that all tasks are done
     console.log("[runner] running learning pipeline...");
-    const skillsDir = path.join(this.config.projectDir, ".claude/skills");
+    const learningsDir = path.join(this.config.projectDir, ".orchestrator/learnings");
+    let learningSummary: string | null = null;
     try {
-      const { translated, validated, applied } =
-        await this.learning.runPipeline(skillsDir);
+      const result = await this.learning.runPipeline(learningsDir);
+      learningSummary = result.summary;
       console.log(
-        `[runner] learning pipeline — translated=${translated} validated=${validated} applied=${applied}`
+        `[runner] learning pipeline — count=${result.count} summarized=${result.summary !== null}`
       );
     } catch (err) {
       console.error("[runner] learning pipeline failed (non-fatal):", err);
     }
 
     // Generate summary
-    const summary = this._buildSummary(runStart);
+    const summary = this._buildSummary(runStart, learningSummary);
 
     // Persist session finish
     this.db.finishSession(this.sessionId!, null, summary.totalCost);
@@ -229,12 +235,10 @@ export class Runner {
     }
 
     const task = this.db.getTask(taskId);
-    const unblocksDeps =
-      task != null && (task.state === "merged" || task.state === "done");
 
-    if (unblocksDeps) {
+    if (task && (task.state === "merged" || task.state === "done")) {
+      // Success — unblock dependents
       const depIds = this.dependentsOf.get(taskId) ?? [];
-
       for (const depId of depIds) {
         const blocked = this.blockedBy.get(depId);
         if (!blocked) continue;
@@ -249,10 +253,19 @@ export class Runner {
           }
         }
       }
-    } else if (task != null && (task.state === "failed" || task.state === "skipped")) {
-      // A task has permanently failed or been skipped. Its dependents may now
-      // be permanently stranded — cascade skip to any that can never run.
-      this.cascadeSkip(taskId);
+    } else if (task && task.state === "failed") {
+      // Permanent failure — stop the entire workflow
+      const msg = `Workflow stopped: task #${taskId} "${task.title}" failed after ${task.retryCount}/${task.maxRetries} retries`;
+      this.notifications.push(msg);
+      this.events.notify(msg, "error");
+      console.error(`[runner] ${msg}`);
+      this.abortController.abort();
+    } else if (task && task.state === "pending") {
+      // Rewound for retry — re-enqueue
+      this.readyQueue.push(taskId);
+      console.log(
+        `[runner] task ${taskId} re-enqueued for retry (${task.retryCount}/${task.maxRetries})`
+      );
     }
 
     this.drainReadyQueue();
@@ -262,72 +275,58 @@ export class Runner {
   // ── checkRunComplete ───────────────────────────────────────
 
   private checkRunComplete(): void {
-    if (
-      this.activeTasks === 0 &&
-      this.readyQueue.length === 0 &&
-      this.runResolve
-    ) {
+    if (this.activeTasks > 0 || !this.runResolve) return;
+    if (this.readyQueue.length === 0 || this.abortController.signal.aborted) {
       this.runResolve();
       this.runResolve = null;
     }
   }
 
-  // ── cascadeSkip ─────────────────────────────────────────────
+  // ── runPhase ─────────────────────────────────────────────
 
-  /**
-   * When a task ends in "failed" or "skipped", checks its dependents to see
-   * if they are now permanently blocked (every remaining blocker is in a
-   * terminal-failed/skipped state). If so, skips them and cascades further.
-   */
-  private cascadeSkip(failedTaskId: number): void {
-    const terminalBad = new Set<string>(["failed", "skipped"]);
-    const queue: number[] = [failedTaskId];
+  private static readonly PHASE_STATE: Record<string, TaskState> = {
+    spec: "spec",
+    execute: "executing",
+    review: "reviewing",
+  };
 
-    while (queue.length > 0) {
-      const sourceId = queue.shift()!;
-      const depIds = this.dependentsOf.get(sourceId) ?? [];
+  private async runPhase(
+    taskId: number,
+    phase: TaskPhase,
+    worktreePath: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const targetState = Runner.PHASE_STATE[phase];
+    const model = this.config.models[phase];
 
-      for (const depId of depIds) {
-        const dep = this.db.getTask(depId);
-        if (!dep) continue;
+    const oldState = this.stateMachine.transition(taskId, targetState);
+    this.events.taskStateChanged(taskId, oldState, targetState);
+    this.events.agentStarted(taskId, phase, model);
 
-        // Only consider dependents that haven't already been processed
-        if (dep.state !== "pending") continue;
+    const task = this.db.getTask(taskId)!;
+    const runId = this.db.startAgentRun(taskId, phase, model);
+    const prompt = this.buildPrompt(task, phase);
 
-        // Check whether ALL remaining blockers for this dependent are
-        // in a terminal-failed/skipped state (i.e., none will ever complete).
-        const blocked = this.blockedBy.get(depId);
-        if (!blocked || blocked.size === 0) continue;
+    const result = await this.claude.runTask({
+      prompt,
+      cwd: worktreePath,
+      model,
+      timeout: this.config.taskTimeout,
+      signal,
+      onOutput: (line) => {
+        this.db.appendLog(taskId, phase, line);
+        this.events.taskLogAppend(taskId, line);
+      },
+    });
 
-        let allBlockersDead = true;
-        for (const blockerId of blocked) {
-          const blocker = this.db.getTask(blockerId);
-          if (!blocker || !terminalBad.has(blocker.state)) {
-            allBlockersDead = false;
-            break;
-          }
-        }
+    this.db.finishAgentRun(runId, result.tokensIn, result.tokensOut, result.cost, result.duration);
+    this.events.agentFinished(taskId, phase, result.tokensIn + result.tokensOut, result.cost);
 
-        if (!allBlockersDead) continue;
-
-        // All blockers are permanently failed/skipped — skip this dependent
-        try {
-          this.stateMachine.skip(depId);
-          this.events.taskStateChanged(depId, dep.state, "skipped");
-          console.log(
-            `[runner] task ${depId} auto-skipped (all blockers failed/skipped)`
-          );
-
-          // Cascade: this newly-skipped task may itself have dependents
-          queue.push(depId);
-        } catch (err) {
-          console.error(
-            `[runner] failed to auto-skip task ${depId}:`,
-            err
-          );
-        }
-      }
+    if (result.exitCode !== 0 && !signal.aborted) {
+      throw new Error(`${phase} phase failed (exit ${result.exitCode}): ${result.stderr}`);
     }
+
+    console.log(`[task:${taskId}] ${phase} phase done`);
   }
 
   // ── executeTask ───────────────────────────────────────────
@@ -339,158 +338,15 @@ export class Runner {
     let worktreePath: string | null = null;
 
     try {
-      // ── Worktree setup ──────────────────────────────────────
       const wt = await this.git.createWorktree(taskId);
       worktreePath = wt.worktreePath;
       this.db.updateTaskWorktree(taskId, wt.worktreePath, wt.branch);
       console.log(`[task:${taskId}] worktree created at ${wt.worktreePath}`);
 
-      // ── Spec phase ─────────────────────────────────────────
-      {
-        const phase: TaskPhase = "spec";
-        const model = this.config.models.spec;
-        const oldState = this.stateMachine.transition(taskId, "spec");
-        this.events.taskStateChanged(taskId, oldState, "spec");
-        this.events.agentStarted(taskId, phase, model);
-
-        const runId = this.db.startAgentRun(taskId, phase, model);
-        const prompt = this.buildPrompt(task, phase);
-
-        const result = await this.claude.runTask({
-          prompt,
-          cwd: wt.worktreePath,
-          model,
-          timeout: this.config.taskTimeout,
-          signal,
-          onOutput: (line) => {
-            this.db.appendLog(taskId, phase, line);
-            this.events.taskLogAppend(taskId, line);
-          },
-        });
-
-        this.db.finishAgentRun(
-          runId,
-          result.tokensIn,
-          result.tokensOut,
-          result.cost,
-          result.duration
-        );
-        this.events.agentFinished(
-          taskId,
-          phase,
-          result.tokensIn + result.tokensOut,
-          result.cost
-        );
-
-        if (result.exitCode !== 0 && !signal.aborted) {
-          throw new Error(
-            `spec phase failed (exit ${result.exitCode}): ${result.stderr}`
-          );
-        }
-
-        console.log(`[task:${taskId}] spec phase done`);
+      for (const phase of ["spec", "execute", "review"] as TaskPhase[]) {
+        await this.runPhase(taskId, phase, wt.worktreePath, signal);
+        if (signal.aborted) return;
       }
-
-      if (signal.aborted) return;
-
-      // ── Execute phase ──────────────────────────────────────
-      {
-        const phase: TaskPhase = "execute";
-        const model = this.config.models.execute;
-        const oldState = this.stateMachine.transition(taskId, "executing");
-        this.events.taskStateChanged(taskId, oldState, "executing");
-        this.events.agentStarted(taskId, phase, model);
-
-        // Re-fetch task so the prompt builder can see any worktree updates
-        const freshTask = this.db.getTask(taskId) ?? task;
-        const runId = this.db.startAgentRun(taskId, phase, model);
-        const prompt = this.buildPrompt(freshTask, phase);
-
-        const result = await this.claude.runTask({
-          prompt,
-          cwd: wt.worktreePath,
-          model,
-          timeout: this.config.taskTimeout,
-          signal,
-          onOutput: (line) => {
-            this.db.appendLog(taskId, phase, line);
-            this.events.taskLogAppend(taskId, line);
-          },
-        });
-
-        this.db.finishAgentRun(
-          runId,
-          result.tokensIn,
-          result.tokensOut,
-          result.cost,
-          result.duration
-        );
-        this.events.agentFinished(
-          taskId,
-          phase,
-          result.tokensIn + result.tokensOut,
-          result.cost
-        );
-
-        if (result.exitCode !== 0 && !signal.aborted) {
-          throw new Error(
-            `execute phase failed (exit ${result.exitCode}): ${result.stderr}`
-          );
-        }
-
-        console.log(`[task:${taskId}] execute phase done`);
-      }
-
-      if (signal.aborted) return;
-
-      // ── Review phase ───────────────────────────────────────
-      {
-        const phase: TaskPhase = "review";
-        const model = this.config.models.review;
-        const oldState = this.stateMachine.transition(taskId, "reviewing");
-        this.events.taskStateChanged(taskId, oldState, "reviewing");
-        this.events.agentStarted(taskId, phase, model);
-
-        const freshTask = this.db.getTask(taskId) ?? task;
-        const runId = this.db.startAgentRun(taskId, phase, model);
-        const prompt = this.buildPrompt(freshTask, phase);
-
-        const result = await this.claude.runTask({
-          prompt,
-          cwd: wt.worktreePath,
-          model,
-          timeout: this.config.taskTimeout,
-          signal,
-          onOutput: (line) => {
-            this.db.appendLog(taskId, phase, line);
-            this.events.taskLogAppend(taskId, line);
-          },
-        });
-
-        this.db.finishAgentRun(
-          runId,
-          result.tokensIn,
-          result.tokensOut,
-          result.cost,
-          result.duration
-        );
-        this.events.agentFinished(
-          taskId,
-          phase,
-          result.tokensIn + result.tokensOut,
-          result.cost
-        );
-
-        if (result.exitCode !== 0 && !signal.aborted) {
-          throw new Error(
-            `review phase failed (exit ${result.exitCode}): ${result.stderr}`
-          );
-        }
-
-        console.log(`[task:${taskId}] review phase done`);
-      }
-
-      if (signal.aborted) return;
 
       // ── Transition to done, then enqueue merge ─────────────
       {
@@ -503,12 +359,10 @@ export class Runner {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[task:${taskId}] error: ${errorMsg}`);
 
-      // Capture a learning from the error
       const freshTask = this.db.getTask(taskId);
       const currentPhase = freshTask?.phase ?? "execute";
       this.learning.capture(taskId, currentPhase, `Execution error: ${errorMsg}`);
 
-      // Handle retry logic via state machine
       try {
         this.stateMachine.fail(taskId);
         const updatedTask = this.db.getTask(taskId);
@@ -519,23 +373,12 @@ export class Runner {
             `(retry ${updatedTask?.retryCount ?? "?"}/${updatedTask?.maxRetries ?? "?"})`
         );
       } catch (smErr) {
-        console.error(
-          `[task:${taskId}] state machine fail() threw:`,
-          smErr
-        );
+        console.error(`[task:${taskId}] state machine fail() threw:`, smErr);
       }
     } finally {
-      // Always attempt worktree cleanup, but only after merge is no longer needed.
-      // The merge step removes the worktree itself on success; this guard handles
-      // the failure path where enqueueMerge was never reached.
       if (worktreePath !== null) {
         const finalTask = this.db.getTask(taskId);
-        if (
-          finalTask &&
-          finalTask.state !== "merged" &&
-          finalTask.state !== "done"
-        ) {
-          // On failure / skip paths, clean up the worktree immediately
+        if (finalTask && finalTask.state !== "merged" && finalTask.state !== "done") {
           await this.git.removeWorktree(taskId).catch((e) => {
             console.warn(`[task:${taskId}] worktree cleanup failed (non-fatal):`, e);
           });
@@ -866,9 +709,9 @@ export class Runner {
 
     // Run the learning pipeline with whatever we have
     console.log("[runner] running end-of-shutdown learning pipeline...");
-    const skillsDir = path.join(this.config.projectDir, ".claude/skills");
+    const learningsDir = path.join(this.config.projectDir, ".orchestrator/learnings");
     try {
-      await this.learning.runPipeline(skillsDir);
+      await this.learning.runPipeline(learningsDir);
     } catch (err) {
       console.error("[runner] shutdown learning pipeline failed:", err);
     }
@@ -886,7 +729,7 @@ export class Runner {
 
   // ── _buildSummary ────────────────────────────────────────
 
-  private _buildSummary(runStart: number): RunSummary {
+  private _buildSummary(runStart: number, learningSummary: string | null = null): RunSummary {
     const allTasks = this.db.getAllTasks();
     const allRuns = this.db.getAgentRuns();
     const allLearnings = this.db.getAllLearnings();
@@ -912,6 +755,8 @@ export class Runner {
       totalTokensOut,
       duration: Date.now() - runStart,
       learnings: allLearnings.length,
+      learningSummary,
+      notifications: this.notifications,
     };
   }
 }
