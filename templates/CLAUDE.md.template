@@ -1,0 +1,32 @@
+# Project: {{PROJECT_NAME}}
+
+## Guidelines
+
+- Use plan mode before implementing non-trivial changes
+- Prefer subagents for parallel work — split independent tasks across agents
+- When you hit an error, fix it autonomously — do not stop to ask
+- Log every error and its fix to the learning pipeline
+- Verify your work: run tests before marking any task as done
+- Write concise commit messages focused on "what" and "why"
+- Follow existing code conventions — check surrounding code before writing
+
+## Testing
+
+- Run `{{TEST_COMMAND}}` to verify all tests pass
+- Tests must pass before any task transitions to "done"
+- Write tests first (spec phase), then implement (execute phase)
+
+## Code Style
+
+- Match existing patterns in the codebase
+- No unnecessary comments, docstrings, or type annotations on unchanged code
+- Remove debug artifacts (console.log, TODO comments) before review
+- Keep changes minimal and focused on the task
+
+## Architecture
+
+{{ARCHITECTURE_NOTES}}
+
+## Dependencies
+
+{{DEPENDENCY_NOTES}}

@@ -1,0 +1,24 @@
+{
+  "name": "claude-orchestrator",
+  "version": "3.0.0",
+  "private": true,
+  "description": "TypeScript orchestrator for autonomous Claude Code task execution with visual dashboard",
+  "scripts": {
+    "dev": "pnpm --filter orchestrator dev",
+    "dev:dashboard": "pnpm --filter dashboard dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter orchestrator start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}
