@@ -39,6 +39,7 @@ export class Runner {
   private readyQueue: number[];
   private runResolve: (() => void) | null;
   private notifications: string[];
+  private pendingApprovals: Map<number, () => void>;
 
   private config: OrchestratorConfig;
 
@@ -62,6 +63,7 @@ export class Runner {
     this.readyQueue = [];
     this.runResolve = null;
     this.notifications = [];
+    this.pendingApprovals = new Map();
   }
 
   // ── init ──────────────────────────────────────────────────
@@ -351,6 +353,7 @@ export class Runner {
       worktreePath = wt.worktreePath;
       this.db.updateTaskWorktree(taskId, wt.worktreePath, wt.branch);
       console.log(`[task:${taskId}] worktree created at ${wt.worktreePath}`);
+      this.events.branchUpdate(taskId, wt.branch, "created");
 
       for (const phase of ["spec", "execute", "review"] as const) {
         await this.runPhase(taskId, phase, wt.worktreePath, signal);
@@ -361,6 +364,10 @@ export class Runner {
       {
         const oldState = this.stateMachine.transition(taskId, "done");
         this.events.taskStateChanged(taskId, oldState, "done", task.title);
+      }
+
+      if (this.config.mode === "human_review") {
+        await this.waitForApproval(taskId);
       }
 
       await this.enqueueMerge(taskId);
@@ -392,6 +399,7 @@ export class Runner {
             console.warn(`[task:${taskId}] worktree cleanup failed (non-fatal):`, e);
           });
           this.db.updateTaskWorktree(taskId, null, null);
+          this.events.branchUpdate(taskId, `task/${taskId}`, "deleted");
         }
       }
     }
@@ -476,7 +484,94 @@ export class Runner {
 
     const oldState = this.stateMachine.transition(taskId, "merged");
     this.events.taskStateChanged(taskId, oldState, "merged", this.db.getTask(taskId)?.title);
+    this.events.branchUpdate(taskId, `task/${taskId}`, "merged");
     console.log(`[task:${taskId}] ${logMsg}`);
+
+    // Fire-and-forget suggestion generation
+    this.generateSuggestions(taskId).catch(err => {
+      console.warn(`[task:${taskId}] suggestion generation failed (non-fatal):`, err);
+    });
+  }
+
+  // ── generateSuggestions ──────────────────────────────────────
+
+  private async generateSuggestions(taskId: number): Promise<void> {
+    const task = this.db.getTask(taskId);
+    if (!task) return;
+
+    const prompt = `You just completed this task: "${task.title}"
+Description: ${task.description}
+
+Files changed: ${task.filesChanged.join(", ") || "unknown"}
+
+Based on what was implemented, suggest 1-3 follow-up features or improvements that would complement this work. For each suggestion, provide:
+- A short title (under 60 chars)
+- A 1-2 sentence description
+
+Format your response as JSON array:
+[{"title": "...", "description": "..."}]
+
+Only suggest genuinely useful follow-ups, not generic advice. If nothing comes to mind, return an empty array [].`;
+
+    const result = await this.claude.runTask({
+      prompt,
+      cwd: this.config.projectDir,
+      model: this.config.models.learning,
+      effort: "low",
+      timeout: 60_000,
+    });
+
+    if (result.exitCode !== 0) return;
+
+    // Parse suggestions from output
+    const text = this.extractResultText(result.stdout);
+    let suggestions: Array<{ title: string; description: string }> = [];
+
+    try {
+      const jsonMatch = text.match(/\[[\s\S]*?\]/);
+      if (jsonMatch) {
+        suggestions = JSON.parse(jsonMatch[0]);
+      }
+    } catch {
+      return;
+    }
+
+    if (!Array.isArray(suggestions) || suggestions.length === 0) return;
+
+    // Save to .orchestrator/suggestions/
+    const fs = await import("fs");
+    const suggestionsDir = path.join(this.config.projectDir, ".orchestrator/suggestions");
+    fs.mkdirSync(suggestionsDir, { recursive: true });
+
+    for (const suggestion of suggestions) {
+      if (!suggestion.title || !suggestion.description) continue;
+
+      const safeName = suggestion.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50);
+      const filePath = path.join(suggestionsDir, `${safeName}.md`);
+
+      const content = `# ${suggestion.title}\n\n${suggestion.description}\n\n---\nGenerated after task #${taskId}: ${task.title}\n`;
+      fs.writeFileSync(filePath, content, "utf8");
+
+      this.events.suggestionNew(suggestion.title, suggestion.description, filePath);
+      console.log(`[task:${taskId}] suggestion: ${suggestion.title}`);
+    }
+  }
+
+  // ── extractResultText ──────────────────────────────────────
+
+  private extractResultText(stdout: string): string {
+    const lines = stdout.split("\n").filter(l => l.trim().startsWith("{"));
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (typeof parsed.result === "string") return parsed.result;
+      } catch { /* skip */ }
+    }
+    try {
+      const parsed = JSON.parse(stdout.trim());
+      if (typeof parsed.result === "string") return parsed.result;
+    } catch { /* skip */ }
+    return stdout;
   }
 
   // ── _attemptConflictResolution ─────────────────────────────
@@ -594,6 +689,79 @@ export class Runner {
     return `${skillInvocation}${taskSection}${depTitleSection}${depFileRefs}`;
   }
 
+  // ── waitForApproval ──────────────────────────────────────
+
+  private async waitForApproval(taskId: number): Promise<void> {
+    const task = this.db.getTask(taskId)!;
+    let gitDiff = "";
+    try {
+      gitDiff = await this.git.getWorktreeDiff(taskId);
+    } catch { gitDiff = "(diff unavailable)"; }
+
+    const logs = this.db.getTaskLogs(taskId);
+    const agentLogSummary = logs.slice(-20).map(l => l.content).join("\n");
+
+    this.events.taskNeedsReview(taskId, gitDiff, agentLogSummary);
+    console.log(`[task:${taskId}] waiting for human approval...`);
+
+    return new Promise<void>((resolve) => {
+      this.pendingApprovals.set(taskId, resolve);
+    });
+  }
+
+  // ── loadPlanFromMarkdown ────────────────────────────────────
+
+  private loadPlanFromMarkdown(markdown: string): number {
+    const lines = markdown.split("\n");
+    const taskDefs: Array<{ title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }> = [];
+    let currentTitle = "";
+    let currentLines: string[] = [];
+    let currentMilestone: string | undefined;
+
+    const flush = () => {
+      if (currentTitle) {
+        const desc = currentLines.join("\n").trim();
+        const depMatch = desc.match(/depends?\s*on:?\s*(#\d+(?:\s*,\s*#\d+)*)/i);
+        const deps = depMatch ? depMatch[1].match(/#(\d+)/g)?.map(d => parseInt(d.slice(1))) ?? [] : [];
+        taskDefs.push({ title: currentTitle, description: desc, dependsOn: deps, milestone: currentMilestone });
+      }
+      currentTitle = "";
+      currentLines = [];
+    };
+
+    for (const line of lines) {
+      const h2Match = line.match(/^##\s+(.+)/);
+      const h3Match = line.match(/^###\s+(.+)/);
+
+      if (h2Match && !h3Match) {
+        flush();
+        currentMilestone = h2Match[1].trim();
+        continue;
+      }
+
+      if (h3Match) {
+        flush();
+        currentTitle = h3Match[1].trim();
+        continue;
+      }
+
+      if (currentTitle) {
+        currentLines.push(line);
+      }
+    }
+    flush();
+
+    let created = 0;
+    for (const def of taskDefs) {
+      const task = this.db.createTask(def.title, def.description, def.dependsOn, def.milestone);
+      this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+      this.events.taskCreated(task.id, task.title);
+      created++;
+    }
+
+    return created;
+  }
+
   // ── handleCommand ─────────────────────────────────────────
 
   async handleCommand(event: WSEventFromClient): Promise<void> {
@@ -674,6 +842,57 @@ export class Runner {
         console.log("[runner] run resumed");
         this.drainReadyQueue();
         break;
+
+      case "task:approve": {
+        const { taskId } = event;
+        const resolver = this.pendingApprovals.get(taskId);
+        if (resolver) {
+          this.pendingApprovals.delete(taskId);
+          resolver();
+          console.log(`[runner] task ${taskId} approved`);
+        } else {
+          console.warn(`[runner] approve: no pending approval for task ${taskId}`);
+        }
+        break;
+      }
+
+      case "plan:load": {
+        const { markdown } = event as { type: "plan:load"; markdown: string };
+        try {
+          const taskCount = this.loadPlanFromMarkdown(markdown);
+          this.events.planLoaded(taskCount);
+          console.log(`[runner] loaded ${taskCount} tasks from plan`);
+        } catch (err) {
+          console.error("[runner] plan:load failed:", err);
+          this.events.notify(`Plan load failed: ${err}`, "error");
+        }
+        break;
+      }
+
+      case "run:start": {
+        const { mode } = event as { type: "run:start"; mode: "automated" | "human_review" };
+        this.config.mode = mode;
+        console.log(`[runner] starting run in ${mode} mode`);
+        // Don't await — run in background so WS stays responsive
+        this.run().catch(err => {
+          console.error("[runner] run failed:", err);
+          this.events.notify(`Run failed: ${err}`, "error");
+        });
+        break;
+      }
+
+      case "task:create": {
+        const { title, description, dependsOn, milestone, effort } = event as any;
+        try {
+          const task = this.db.createTask(title, description, dependsOn ?? [], milestone);
+          this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+          this.events.taskCreated(task.id, task.title);
+          console.log(`[runner] created task ${task.id}: ${title}`);
+        } catch (err) {
+          console.error("[runner] task:create failed:", err);
+        }
+        break;
+      }
 
       default:
         console.warn("[runner] unknown command received:", event);

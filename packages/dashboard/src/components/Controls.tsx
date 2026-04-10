@@ -1,11 +1,13 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 
 interface ControlsProps {
   selectedTaskId?: number;
   onCommand: (cmd: { type: string; taskId?: number }) => void;
   paused: boolean;
+  runActive: boolean;
+  onExecute: (mode: "automated" | "human_review") => void;
 }
 
 function ControlButton({
@@ -53,7 +55,9 @@ function ControlButton({
   );
 }
 
-export default function Controls({ selectedTaskId, onCommand, paused }: ControlsProps) {
+export default function Controls({ selectedTaskId, onCommand, paused, runActive, onExecute }: ControlsProps) {
+  const [mode, setMode] = useState<"automated" | "human_review">("automated");
+
   return (
     <div
       style={{
@@ -66,6 +70,77 @@ export default function Controls({ selectedTaskId, onCommand, paused }: Controls
         gap: 12,
       }}
     >
+      {/* Execute Section */}
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+          color: "var(--text-muted)",
+          marginBottom: 4,
+        }}
+      >
+        Execute
+      </div>
+
+      <div style={{ display: "flex", gap: 4 }}>
+        {(["automated", "human_review"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            style={{
+              flex: 1,
+              fontSize: 11,
+              fontWeight: 500,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              padding: "5px 8px",
+              borderRadius: 4,
+              border: mode === m
+                ? "1px solid var(--accent)"
+                : "1px solid var(--border)",
+              backgroundColor: mode === m ? "var(--accent)" : "transparent",
+              color: mode === m ? "#fff" : "var(--text-muted)",
+              cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+          >
+            {m === "automated" ? "Automated" : "Human Review"}
+          </button>
+        ))}
+      </div>
+
+      <button
+        onClick={() => onExecute(mode)}
+        disabled={runActive}
+        style={{
+          width: "100%",
+          padding: 10,
+          fontSize: 13,
+          fontWeight: 600,
+          borderRadius: 6,
+          border: "none",
+          backgroundColor: "var(--accent)",
+          color: "#fff",
+          cursor: runActive ? "not-allowed" : "pointer",
+          opacity: runActive ? 0.5 : 1,
+          animation: runActive ? "executePulse 1.5s ease-in-out infinite" : "none",
+        }}
+      >
+        {runActive ? "Running..." : "\u25B6 Execute"}
+      </button>
+
+      <style>{`
+        @keyframes executePulse {
+          0%, 100% { background-color: #3b82f6; }
+          50% { background-color: #60a5fa; }
+        }
+      `}</style>
+
+      {/* Divider */}
+      <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
+
       <div
         style={{
           fontSize: 12,

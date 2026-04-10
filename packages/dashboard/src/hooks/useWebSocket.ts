@@ -25,7 +25,24 @@ type WSEventFromServer =
   | { type: "layer:started"; layerIndex: number; taskIds: number[] }
   | { type: "layer:completed"; layerIndex: number }
   | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: string | null }
-  | { type: "run:completed"; summary: RunSummary };
+  | { type: "run:completed"; summary: RunSummary }
+  | { type: "skills:list_result"; skills: Array<{ name: string; hasVariations: boolean }> }
+  | { type: "skills:content"; skillName: string; content: string; variations: Array<{ name: string; content: string }> }
+  | { type: "files:tree_result"; tree: TreeNodeWS[] }
+  | { type: "prompt:response"; taskId: number; response: string }
+  | { type: "task:created"; taskId: number; title: string }
+  | { type: "plan:loaded"; taskCount: number }
+  | { type: "task:needs_review"; taskId: number; gitDiff: string; agentLogSummary: string }
+  | { type: "suggestion:new"; title: string; description: string; filePath: string }
+  | { type: "run:started"; mode: "automated" | "human_review"; sessionId: number }
+  | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" };
+
+interface TreeNodeWS {
+  path: string;
+  name: string;
+  type: "file" | "directory";
+  children?: TreeNodeWS[];
+}
 
 interface RunSummary {
   sessionId: number;
@@ -47,7 +64,17 @@ type WSEventFromClient =
   | { type: "command:pause_task"; taskId: number }
   | { type: "command:resume_task"; taskId: number }
   | { type: "command:retry_task"; taskId: number }
-  | { type: "command:skip_task"; taskId: number };
+  | { type: "command:skip_task"; taskId: number }
+  | { type: "skills:list" }
+  | { type: "skills:get"; skillName: string }
+  | { type: "skills:save"; skillName: string; content: string }
+  | { type: "skills:save_variation"; skillName: string; variationName: string; content: string }
+  | { type: "skills:activate"; skillName: string; variationName: string }
+  | { type: "files:tree" }
+  | { type: "prompt:submit"; taskId: number; prompt: string; threadMode: "continue" | "new" }
+  | { type: "task:create"; title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }
+  | { type: "plan:load"; markdown: string }
+  | { type: "run:start"; mode: "automated" | "human_review" };
 
 export interface PhaseContextInfo {
   phase: string;
@@ -73,6 +100,29 @@ export interface TaskInfo {
   contextRollup: { totalTokensUsed: number; peakPercentage: number };
 }
 
+export interface SkillListItem {
+  name: string;
+  hasVariations: boolean;
+}
+
+export interface SkillContent {
+  skillName: string;
+  content: string;
+  variations: Array<{ name: string; content: string }>;
+}
+
+export interface ReviewData {
+  taskId: number;
+  gitDiff: string;
+  agentLogSummary: string;
+}
+
+export interface Suggestion {
+  title: string;
+  description: string;
+  filePath: string;
+}
+
 export interface WebSocketState {
   connected: boolean;
   tasks: Map<number, TaskInfo>;
@@ -80,6 +130,13 @@ export interface WebSocketState {
   layers: { active: number; completed: number[] };
   costs: { totalCost: number; totalTokensIn: number; totalTokensOut: number };
   summary: RunSummary | null;
+  skills: SkillListItem[];
+  skillContent: SkillContent | null;
+  fileTree: TreeNodeWS[];
+  promptResponses: Map<number, string>;
+  planStatus: { loaded: boolean; taskCount: number };
+  pendingReviews: Map<number, ReviewData>;
+  suggestions: Suggestion[];
   sendCommand: (event: WSEventFromClient) => void;
 }
 
@@ -101,6 +158,13 @@ export function useWebSocket(url: string): WebSocketState {
     totalTokensOut: 0,
   });
   const [summary, setSummary] = useState<RunSummary | null>(null);
+  const [skills, setSkills] = useState<SkillListItem[]>([]);
+  const [skillContent, setSkillContent] = useState<SkillContent | null>(null);
+  const [fileTree, setFileTree] = useState<TreeNodeWS[]>([]);
+  const [promptResponses, setPromptResponses] = useState<Map<number, string>>(new Map());
+  const [planStatus, setPlanStatus] = useState<{ loaded: boolean; taskCount: number }>({ loaded: false, taskCount: 0 });
+  const [pendingReviews, setPendingReviews] = useState<Map<number, ReviewData>>(new Map());
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     let data: WSEventFromServer;
@@ -129,6 +193,13 @@ export function useWebSocket(url: string): WebSocketState {
           });
           return next;
         });
+        if (data.newState === "merged" || data.newState === "failed" || data.newState === "pending") {
+          setPendingReviews((prev) => {
+            const next = new Map(prev);
+            next.delete(data.taskId);
+            return next;
+          });
+        }
         break;
       }
 
@@ -263,6 +334,68 @@ export function useWebSocket(url: string): WebSocketState {
         });
         break;
       }
+
+      case "run:started": {
+        // Could store mode/sessionId if needed
+        break;
+      }
+
+      case "skills:list_result": {
+        setSkills(data.skills);
+        break;
+      }
+
+      case "skills:content": {
+        setSkillContent({
+          skillName: data.skillName,
+          content: data.content,
+          variations: data.variations,
+        });
+        break;
+      }
+
+      case "files:tree_result": {
+        setFileTree(data.tree);
+        break;
+      }
+
+      case "prompt:response": {
+        setPromptResponses((prev) => {
+          const next = new Map(prev);
+          next.set(data.taskId, data.response);
+          return next;
+        });
+        break;
+      }
+
+      case "task:created": {
+        // Task will be added via task:init, no-op
+        break;
+      }
+
+      case "plan:loaded": {
+        setPlanStatus({ loaded: true, taskCount: data.taskCount });
+        break;
+      }
+
+      case "task:needs_review": {
+        setPendingReviews((prev) => {
+          const next = new Map(prev);
+          next.set(data.taskId, { taskId: data.taskId, gitDiff: data.gitDiff, agentLogSummary: data.agentLogSummary });
+          return next;
+        });
+        break;
+      }
+
+      case "suggestion:new": {
+        setSuggestions(prev => [...prev, { title: data.title, description: data.description, filePath: data.filePath }]);
+        break;
+      }
+
+      case "branch:update": {
+        // Branch info derived from task states; no-op for dedicated events
+        break;
+      }
     }
   }, []);
 
@@ -323,8 +456,15 @@ export function useWebSocket(url: string): WebSocketState {
     layers,
     costs,
     summary,
+    skills,
+    skillContent,
+    fileTree,
+    promptResponses,
+    planStatus,
+    pendingReviews,
+    suggestions,
     sendCommand,
   };
 }
 
-export type { TaskState, TaskPhase, WSEventFromClient, WSEventFromServer, RunSummary };
+export type { TaskState, TaskPhase, WSEventFromClient, WSEventFromServer, RunSummary, TreeNodeWS };

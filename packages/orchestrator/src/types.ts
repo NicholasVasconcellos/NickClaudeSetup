@@ -145,7 +145,17 @@ export type WSEventFromServer =
   | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: TaskEffort | null }
   | { type: "task:unblocked"; taskId: number }
   | { type: "run:completed"; summary: RunSummary }
-  | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };
+  | { type: "run:notification"; message: string; level: "info" | "warning" | "error" }
+  | { type: "plan:loaded"; taskCount: number }
+  | { type: "run:started"; mode: "automated" | "human_review"; sessionId: number }
+  | { type: "task:created"; taskId: number; title: string }
+  | { type: "task:needs_review"; taskId: number; gitDiff: string; agentLogSummary: string }
+  | { type: "prompt:response"; taskId: number; response: string }
+  | { type: "suggestion:new"; title: string; description: string; filePath: string }
+  | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" }
+  | { type: "skills:list_result"; skills: Array<{ name: string; hasVariations: boolean }> }
+  | { type: "skills:content"; skillName: string; content: string; variations: Array<{ name: string; content: string }> }
+  | { type: "files:tree_result"; tree: Array<{ path: string; type: "file" | "directory"; children?: any[] }> };
 
 export type WSEventFromClient =
   | { type: "task:pause"; taskId: number }
@@ -153,7 +163,18 @@ export type WSEventFromClient =
   | { type: "task:retry"; taskId: number }
   | { type: "task:skip"; taskId: number }
   | { type: "run:pause_all" }
-  | { type: "run:resume_all" };
+  | { type: "run:resume_all" }
+  | { type: "plan:load"; markdown: string }
+  | { type: "run:start"; mode: "automated" | "human_review" }
+  | { type: "task:create"; title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }
+  | { type: "task:approve"; taskId: number }
+  | { type: "prompt:submit"; taskId: number; prompt: string; threadMode: "continue" | "new" }
+  | { type: "skills:list" }
+  | { type: "skills:get"; skillName: string }
+  | { type: "skills:save"; skillName: string; content: string }
+  | { type: "skills:save_variation"; skillName: string; variationName: string; content: string }
+  | { type: "skills:activate"; skillName: string; variationName: string }
+  | { type: "files:tree" };
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -164,6 +185,7 @@ export interface OrchestratorConfig {
   taskTimeout: number;        // ms per task
   overallTimeout: number;     // ms for entire run
   wsPort: number;
+  mode: "automated" | "human_review";
   pushAfterMerge: boolean;
   mainBranch: string;
   models: {
@@ -183,6 +205,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   taskTimeout: 10 * 60 * 1000,    // 10 minutes
   overallTimeout: 120 * 60 * 1000, // 2 hours
   wsPort: 3100,
+  mode: "automated",
   pushAfterMerge: true,
   mainBranch: "main",
   models: {

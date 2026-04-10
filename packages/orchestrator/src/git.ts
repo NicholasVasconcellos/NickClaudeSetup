@@ -191,6 +191,26 @@ export class GitManager {
     return stdout.split("\n").filter(Boolean);
   }
 
+  async getWorktreeDiff(taskId: number): Promise<string> {
+    const wt = this.worktreePath(taskId);
+    return new Promise((resolve_fn, reject) => {
+      execFile("git", ["diff", "HEAD", "--", "."], { cwd: wt, timeout: 30_000, maxBuffer: 1024 * 1024 * 5 }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve_fn(stdout.trim());
+      });
+    });
+  }
+
+  async getWorktreeDiffVsMain(taskId: number): Promise<string> {
+    const branch = this.branchName(taskId);
+    return new Promise((resolve_fn, reject) => {
+      execFile("git", ["diff", `${this.mainBranch}...${branch}`, "--"], { cwd: this.projectDir, timeout: 30_000, maxBuffer: 1024 * 1024 * 5 }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve_fn(stdout.trim());
+      });
+    });
+  }
+
   async cleanupOrphanedWorktrees(): Promise<number> {
     const { stdout } = await this.exec(["worktree", "list", "--porcelain"]);
 

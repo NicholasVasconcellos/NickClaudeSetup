@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useEffect } from "react";
 import TaskCard, { STATE_COLORS } from "./TaskCard";
 
 interface TaskData {
@@ -27,56 +27,146 @@ const LAYER_GAP = 60;
 const CARD_GAP = 16;
 const PADDING = 24;
 
+const HIDDEN_STATES = new Set(["pending", "skipped"]);
+
 export default function TaskGraph({
   tasks,
   layers,
   selectedTaskId,
   onSelectTask,
 }: TaskGraphProps) {
-  // Group tasks by their presumed layer based on order
-  // In production this would come from the DAG, but for now we infer from task IDs
-  const taskLayers = useMemo(() => {
-    const allIds = Array.from(tasks.keys()).sort((a, b) => a - b);
-    if (allIds.length === 0) return [];
+  // Persistent position cache: once assigned, never moves
+  const positionCache = useRef<Map<number, { layerIdx: number; slotIdx: number }>>(new Map());
+  const containerRef = useRef<HTMLDivElement>(null);
+  const prevLayerCount = useRef(0);
 
-    // If we know the active layer, we can at least separate completed layers
-    const completedSet = new Set(layers.completed);
-    const layerMap = new Map<number, number[]>();
-
-    // Simple heuristic: distribute tasks across layers
-    // Tasks with done/merged state go to earlier layers
-    const doneIds: number[] = [];
-    const activeIds: number[] = [];
-
-    for (const id of allIds) {
-      const task = tasks.get(id);
-      if (!task) continue;
-      // Hide pending and skipped tasks from the graph
-      if (task.state === "pending" || task.state === "skipped") continue;
-      if (task.state === "done" || task.state === "merged") {
-        doneIds.push(id);
-      } else {
-        activeIds.push(id);
+  // Compute DAG layout via topological layer assignment using dependsOn
+  const { taskLayers, positionMap } = useMemo(() => {
+    const visibleIds: number[] = [];
+    for (const [id, task] of tasks) {
+      if (!HIDDEN_STATES.has(task.state)) {
+        visibleIds.push(id);
       }
     }
 
-    const result: number[][] = [];
-    if (doneIds.length > 0) result.push(doneIds);
-    if (activeIds.length > 0) result.push(activeIds);
-
-    // If no categorization worked, just put everything in one layer
-    if (result.length === 0 && allIds.length > 0) {
-      result.push(allIds);
+    if (visibleIds.length === 0) {
+      return { taskLayers: [] as number[][], positionMap: new Map<number, { layerIdx: number; slotIdx: number }>() };
     }
 
-    return result;
-  }, [tasks, layers]);
+    const visibleSet = new Set(visibleIds);
+
+    // Compute layer for each visible task: layer = max(layer of visible deps) + 1
+    // Tasks with no (visible) dependencies go to layer 0
+    const layerOf = new Map<number, number>();
+
+    function computeLayer(id: number): number {
+      if (layerOf.has(id)) return layerOf.get(id)!;
+      // Mark with -1 to detect cycles
+      layerOf.set(id, -1);
+      const task = tasks.get(id);
+      let maxDep = -1;
+      if (task?.dependsOn) {
+        for (const depId of task.dependsOn) {
+          if (visibleSet.has(depId)) {
+            const depLayer = computeLayer(depId);
+            if (depLayer > maxDep) maxDep = depLayer;
+          }
+        }
+      }
+      const layer = maxDep + 1;
+      layerOf.set(id, layer);
+      return layer;
+    }
+
+    for (const id of visibleIds) {
+      computeLayer(id);
+    }
+
+    // Group by layer
+    const layerGroups = new Map<number, number[]>();
+    for (const id of visibleIds) {
+      const l = layerOf.get(id)!;
+      if (!layerGroups.has(l)) layerGroups.set(l, []);
+      layerGroups.get(l)!.push(id);
+    }
+
+    // Sort layer indices and build ordered array
+    const sortedLayerIndices = Array.from(layerGroups.keys()).sort((a, b) => a - b);
+    const result: number[][] = sortedLayerIndices.map((li) => {
+      const ids = layerGroups.get(li)!;
+      // Sort tasks within a layer by ID for stability
+      ids.sort((a, b) => a - b);
+      return ids;
+    });
+
+    // Assign positions: use cache for already-placed tasks, assign new slots for new tasks
+    const cache = positionCache.current;
+    const newPositionMap = new Map<number, { layerIdx: number; slotIdx: number }>();
+
+    for (let layerIdx = 0; layerIdx < result.length; layerIdx++) {
+      const layerIds = result[layerIdx];
+      // Collect already-cached tasks at this layer index
+      const cachedInLayer: { id: number; slotIdx: number }[] = [];
+      const uncached: number[] = [];
+
+      for (const id of layerIds) {
+        const cached = cache.get(id);
+        if (cached && cached.layerIdx === layerIdx) {
+          cachedInLayer.push({ id, slotIdx: cached.slotIdx });
+        } else if (cached) {
+          // Task moved layers — treat as new placement at this layer
+          uncached.push(id);
+        } else {
+          uncached.push(id);
+        }
+      }
+
+      // Determine occupied slots
+      const occupiedSlots = new Set(cachedInLayer.map((c) => c.slotIdx));
+
+      // Place cached tasks
+      for (const c of cachedInLayer) {
+        newPositionMap.set(c.id, { layerIdx, slotIdx: c.slotIdx });
+      }
+
+      // Place uncached tasks in first available slots
+      let nextSlot = 0;
+      for (const id of uncached) {
+        while (occupiedSlots.has(nextSlot)) nextSlot++;
+        const pos = { layerIdx, slotIdx: nextSlot };
+        newPositionMap.set(id, pos);
+        cache.set(id, pos);
+        occupiedSlots.add(nextSlot);
+        nextSlot++;
+      }
+    }
+
+    return { taskLayers: result, positionMap: newPositionMap };
+  }, [tasks]);
+
+  // Auto-scroll right when new layers appear
+  const layerCount = taskLayers.length;
+  useEffect(() => {
+    if (layerCount > prevLayerCount.current && containerRef.current) {
+      const el = containerRef.current;
+      el.scrollLeft = el.scrollWidth - el.clientWidth;
+    }
+    prevLayerCount.current = layerCount;
+  }, [layerCount]);
+
+  // Compute max slot per layer for height calculation
+  const maxSlot = useMemo(() => {
+    let max = 0;
+    for (const pos of positionMap.values()) {
+      if (pos.slotIdx > max) max = pos.slotIdx;
+    }
+    return max;
+  }, [positionMap]);
 
   const totalWidth =
     taskLayers.length * (CARD_WIDTH + LAYER_GAP) - LAYER_GAP + PADDING * 2;
-  const maxPerLayer = Math.max(1, ...taskLayers.map((l) => l.length));
   const totalHeight =
-    maxPerLayer * (CARD_HEIGHT + CARD_GAP) - CARD_GAP + PADDING * 2;
+    (maxSlot + 1) * (CARD_HEIGHT + CARD_GAP) - CARD_GAP + PADDING * 2;
 
   if (tasks.size === 0) {
     return (
@@ -95,8 +185,31 @@ export default function TaskGraph({
     );
   }
 
+  // Build a lookup from task id -> pixel position for dependency lines
+  const taskPositions = new Map<number, { x: number; y: number }>();
+  for (const [id, pos] of positionMap) {
+    taskPositions.set(id, {
+      x: PADDING + pos.layerIdx * (CARD_WIDTH + LAYER_GAP),
+      y: PADDING + pos.slotIdx * (CARD_HEIGHT + CARD_GAP),
+    });
+  }
+
+  // Collect dependency edges
+  const edges: { fromId: number; toId: number }[] = [];
+  for (const [id, task] of tasks) {
+    if (HIDDEN_STATES.has(task.state)) continue;
+    if (task.dependsOn) {
+      for (const depId of task.dependsOn) {
+        if (taskPositions.has(depId)) {
+          edges.push({ fromId: depId, toId: id });
+        }
+      }
+    }
+  }
+
   return (
     <div
+      ref={containerRef}
       style={{
         position: "relative",
         overflowX: "auto",
@@ -118,83 +231,70 @@ export default function TaskGraph({
           pointerEvents: "none",
         }}
       >
-        {taskLayers.map((layerIds, layerIdx) => {
-          if (layerIdx === 0) return null;
-          const prevLayer = taskLayers[layerIdx - 1];
-          return layerIds.map((taskId, taskIdx) => {
-            const toX = PADDING + layerIdx * (CARD_WIDTH + LAYER_GAP);
-            const toY =
-              PADDING + taskIdx * (CARD_HEIGHT + CARD_GAP) + CARD_HEIGHT / 2;
+        {edges.map(({ fromId, toId }) => {
+          const from = taskPositions.get(fromId);
+          const to = taskPositions.get(toId);
+          if (!from || !to) return null;
 
-            return prevLayer.map((prevId, prevIdx) => {
-              const fromX =
-                PADDING +
-                (layerIdx - 1) * (CARD_WIDTH + LAYER_GAP) +
-                CARD_WIDTH;
-              const fromY =
-                PADDING +
-                prevIdx * (CARD_HEIGHT + CARD_GAP) +
-                CARD_HEIGHT / 2;
+          const fromX = from.x + CARD_WIDTH;
+          const fromY = from.y + CARD_HEIGHT / 2;
+          const toX = to.x;
+          const toY = to.y + CARD_HEIGHT / 2;
+          const midX = (fromX + toX) / 2;
 
-              const midX = (fromX + toX) / 2;
-
-              return (
-                <path
-                  key={`${prevId}-${taskId}`}
-                  d={`M ${fromX} ${fromY} C ${midX} ${fromY}, ${midX} ${toY}, ${toX} ${toY}`}
-                  fill="none"
-                  stroke="var(--border)"
-                  strokeWidth={1.5}
-                  opacity={0.5}
-                />
-              );
-            });
-          });
+          return (
+            <path
+              key={`${fromId}-${toId}`}
+              d={`M ${fromX} ${fromY} C ${midX} ${fromY}, ${midX} ${toY}, ${toX} ${toY}`}
+              fill="none"
+              stroke="var(--border)"
+              strokeWidth={1.5}
+              opacity={0.5}
+            />
+          );
         })}
       </svg>
 
       {/* Task cards */}
       <div style={{ position: "relative", width: totalWidth, height: totalHeight }}>
-        {taskLayers.map((layerIds, layerIdx) =>
-          layerIds.map((taskId, taskIdx) => {
-            const task = tasks.get(taskId);
-            if (!task) return null;
+        {Array.from(positionMap.entries()).map(([taskId, pos]) => {
+          const task = tasks.get(taskId);
+          if (!task) return null;
 
-            const x = PADDING + layerIdx * (CARD_WIDTH + LAYER_GAP);
-            const y = PADDING + taskIdx * (CARD_HEIGHT + CARD_GAP);
-            const isSelected = selectedTaskId === taskId;
+          const x = PADDING + pos.layerIdx * (CARD_WIDTH + LAYER_GAP);
+          const y = PADDING + pos.slotIdx * (CARD_HEIGHT + CARD_GAP);
+          const isSelected = selectedTaskId === taskId;
 
-            return (
-              <div
-                key={taskId}
-                style={{
-                  position: "absolute",
-                  left: x,
-                  top: y,
-                  width: CARD_WIDTH,
-                  outline: isSelected
-                    ? `2px solid var(--accent)`
-                    : "none",
-                  outlineOffset: 2,
-                  borderRadius: 6,
-                }}
-              >
-                <TaskCard
-                  id={taskId}
-                  title={task.title ?? `Task ${taskId}`}
-                  description={task.description}
-                  milestone={task.milestone}
-                  dependsOn={task.dependsOn}
-                  state={task.state}
-                  phase={task.phase}
-                  cost={task.cost}
-                  contextPercentage={task.contextPercentage}
-                  onClick={() => onSelectTask?.(taskId)}
-                />
-              </div>
-            );
-          })
-        )}
+          return (
+            <div
+              key={taskId}
+              style={{
+                position: "absolute",
+                left: x,
+                top: y,
+                width: CARD_WIDTH,
+                outline: isSelected
+                  ? `2px solid var(--accent)`
+                  : "none",
+                outlineOffset: 2,
+                borderRadius: 6,
+              }}
+            >
+              <TaskCard
+                id={taskId}
+                title={task.title ?? `Task ${taskId}`}
+                description={task.description}
+                milestone={task.milestone}
+                dependsOn={task.dependsOn}
+                state={task.state}
+                phase={task.phase}
+                cost={task.cost}
+                contextPercentage={task.contextPercentage}
+                onClick={() => onSelectTask?.(taskId)}
+              />
+            </div>
+          );
+        })}
       </div>
 
       {/* Layer labels */}
