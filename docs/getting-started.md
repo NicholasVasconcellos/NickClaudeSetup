@@ -169,11 +169,13 @@ Check your project — the code is on the main branch, committed per-task with c
 
 For plans with 30+ requirements, the orchestrator handles scale through:
 
-### Milestones
-The get-tasks skill groups related tasks into milestones (e.g., "Authentication", "API Layer", "Frontend"). Each milestone's tasks are internally ordered, and milestones can depend on each other.
+### Task Decomposition
+By default, get-tasks produces a flat task list with explicit `dependsOn` edges. Execution order is determined entirely by these dependency edges — no grouping or ordering beyond what the DAG dictates.
+
+For large projects, enable milestone grouping with the `--milestones` CLI flag. Milestones are cosmetic labels only (e.g., "Authentication", "API Layer", "Frontend") — execution order still uses `dependsOn`.
 
 ### DAG Layers
-Tasks are organized into layers based on dependencies. Within each layer, tasks run in parallel up to the concurrency limit. A project with 40 tasks might have 8-10 layers, with 3-6 tasks running simultaneously per layer.
+Tasks are organized into layers based on `dependsOn` edges. Within each layer, tasks run in parallel up to the concurrency limit. A project with 40 tasks might have 8-10 layers, with 3-6 tasks running simultaneously per layer.
 
 ### Context Management
 Each agent only receives:

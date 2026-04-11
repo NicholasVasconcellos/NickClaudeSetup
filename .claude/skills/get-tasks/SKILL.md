@@ -1,16 +1,15 @@
 ---
 name: get-tasks
 description: >
-  Break a PRD, issue, or user description into milestones and atomic tasks
-  with dependency ordering. Main agent defines milestones and their
-  relationships, then spawns subagents per milestone to decompose tasks.
-  Outputs structured JSON task plan. Trigger on: /get-tasks
+  Break a PRD, issue, or user description into atomic tasks
+  with dependency ordering. Outputs structured JSON task plan.
+  Trigger on: /get-tasks
 disable-model-invocation: true
 ---
 
 # get-tasks
 
-Analyze the project and decompose it into milestones and atomic tasks. The main agent owns milestone-level planning; subagents own task-level decomposition.
+Analyze the project and decompose it into atomic tasks.
 
 ## Inputs
 
@@ -21,13 +20,11 @@ You will receive one of: a PRD document, a GitHub issue, a user description, or 
 If `CODEBASE.md` does not exist at the project root, create it now. If it exists but is stale (missing files or directories that clearly exist), update it.
 
 CODEBASE.md must be:
-
 - Hierarchical: reflect the actual directory tree
 - Scannable: use concise annotations, not prose
 - Accurate: walk the real file system, do not guess
 
 Format example:
-
 ```
 src/
   server/
@@ -49,7 +46,6 @@ Use Context7 to fetch documentation for every library, framework, or SDK that th
 ## Step 3 — Analyze requirements
 
 Read the inputs again. Identify:
-
 - The end goal (what done looks like)
 - The domain areas involved (auth, data layer, UI, infra, etc.)
 - Constraints (existing conventions, tech stack, deployment target)
@@ -57,104 +53,40 @@ Read the inputs again. Identify:
 
 If critical unknowns exist, list them and stop — ask the user before continuing.
 
-## Step 4 — Define milestones (main agent)
+## Step 4 — Decompose into tasks
 
-Group work into milestones. A milestone is a coherent, deployable slice of the goal (e.g., "Auth", "Data Layer", "Dashboard UI"). Milestones are not phases like "testing" or "cleanup" — tests and cleanup belong inside the relevant milestone.
+Decompose the work into a flat list of tasks. A task must be:
+- **Atomic**: one logical unit of work, completable by one agent in one session
+- **Concrete**: the description includes enough context to implement without re-reading the full PRD
+- **Verifiable**: acceptance criteria are explicit and testable
 
-For each milestone, define:
+Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task to keep the list short. There is no upper or lower limit on task count — decompose until every task is truly atomic.
 
-- **Name**: short label
-- **Goal**: what this milestone delivers when complete
-- **Scope**: which domain areas and files it covers
-- **Upstream milestones**: which milestones must complete first (ordering)
-- **Boundary tasks**: specific task titles from upstream milestones that this milestone's tasks may depend on (these are the cross-milestone dependency anchors)
+For each task, identify which other tasks (by title) must complete before it can start.
 
-Order milestones topologically — a milestone's upstream milestones must appear earlier in the list.
-
-## Step 5 — Decompose tasks per milestone (subagents)
-
-For each milestone, spawn a subagent. Pass it concisely:
-
-- The milestone name, goal, and scope from Step 4
-- The project constraints and conventions from Step 3
-- The **boundary tasks** (exact titles) from upstream milestones that its tasks may reference in `dependsOn`
-- Relevant parts of CODEBASE.md (only the files/directories this milestone touches)
-
-Each subagent must return a JSON array of tasks:
-
-```json
-[
-  {
-    "title": "string",
-    "description": "string — what to build and the exact acceptance criteria",
-    "dependsOn": ["task title", "..."]
-  }
-]
-```
-
-Subagent rules:
-
-- A task must be **atomic** (one agent, one session), **concrete** (self-contained description), and **verifiable** (explicit acceptance criteria)
-- `dependsOn` may reference titles within the same milestone OR boundary task titles from upstream milestones — nothing else
-- `title` must be unique and descriptive (it becomes the global identifier)
-- Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task. No upper or lower limit on task count — decompose until every task is truly atomic
-- Do not write code, create files, or ask clarifying questions
-
-Spawn subagents for independent milestones in parallel when possible.
-
-## Step 6 — Flatten into a milestone-agnostic DAG (main agent)
-
-Collect task arrays from all subagents. Merge them into a single flat task list. Milestones are now only labels — execution order is determined entirely by explicit `dependsOn` edges.
-
-For every task, review and finalize its `dependsOn`:
-
-1. **Keep** any within-milestone dependencies the subagent set
-2. **Keep** any cross-milestone boundary task dependencies the subagent set
-3. **Add missing cross-milestone edges**: if a task has no `dependsOn` entries but belongs to a milestone with upstream milestones, it MUST depend on at least one boundary task from each upstream milestone. Milestone ordering that is not encoded as an explicit `dependsOn` edge is invisible to the runner and will cause parallel execution of tasks that should be sequential
-4. **Remove milestone assumptions**: do not rely on milestone order for anything. The flat `dependsOn` list is the sole source of execution order
-
-Then validate:
-
-1. **Title uniqueness**: no duplicate titles across milestones. If collisions exist, prefix with milestone name
-2. **Dependency integrity**: every `dependsOn` reference resolves to an existing task title. Flag and fix any broken references
-3. **No cycles**: the full DAG is acyclic
-4. **Completeness**: every boundary task listed in Step 4 actually exists in the output
-5. **No orphaned downstream tasks**: no task from a downstream milestone has an empty `dependsOn` unless it genuinely has zero prerequisites across the entire project
-
-Fix any issues found.
-
-## Step 7 — Output
+## Step 5 — Output
 
 Output the task plan as a single JSON object and nothing else after it. Do not wrap it in a code block — output raw JSON.
 
 Schema:
-
 ```json
 {
-  "milestones": [
+  "tasks": [
     {
-      "name": "string",
-      "tasks": [
-        {
-          "title": "string",
-          "description": "string — what to build and the exact acceptance criteria",
-          "dependsOn": ["task title", "..."]
-        }
-      ]
+      "title": "string",
+      "description": "string — what to build and the exact acceptance criteria",
+      "dependsOn": ["task title", "..."]
     }
   ]
 }
 ```
 
-The `milestones` grouping is retained for readability only. Execution ignores it — only `dependsOn` matters.
-
 Rules for the JSON output:
-
-- `title` is unique across all milestones
+- `title` is unique across all tasks
 - `description` is self-contained — a fresh agent must be able to read it and know exactly what to implement and how to verify it is done
-- `dependsOn` references `title` strings exactly as written; use `[]` only if the task has zero prerequisites across the entire project
+- `dependsOn` references `title` strings exactly as written; use `[]` if there are no dependencies.
 
-## Step 8 — Post-output checklist
+## Step 6 — Post-output checklist
 
 After outputting the JSON, append a plain-text section with these items:
 

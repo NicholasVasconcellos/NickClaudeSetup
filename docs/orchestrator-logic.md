@@ -28,7 +28,7 @@ A step-by-step trace of every function call from a sample `plan.md` through task
 ## 1. Plan to Tasks (external `get-tasks` skill)
 
 - The `get-tasks` skill reads `plan.md`
-- Decomposes into structured tasks with title, description, dependencies, milestone
+- Decomposes into structured tasks with title, description, dependencies, and optionally milestone (only when `--milestones` flag is passed)
 - Calls `Database.createTask()` for each:
   - Task 1: "Auth API" — `dependsOn: []`
   - Task 2: "Profile Page" — `dependsOn: [1]`

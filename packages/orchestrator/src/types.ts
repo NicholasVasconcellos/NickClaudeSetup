@@ -2,7 +2,7 @@
 
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "claude-sonnet-4-6": 200_000,
-  "claude-opus-4-6": 1_000_000,
+  "claude-opus-4-6": 200_000,
   "claude-haiku-4-5-20251001": 200_000,
 };
 
@@ -187,6 +187,7 @@ export interface OrchestratorConfig {
   wsPort: number;
   mode: "automated" | "human_review";
   pushAfterMerge: boolean;
+  useMilestones: boolean;
   mainBranch: string;
   models: {
     spec: string;
@@ -207,6 +208,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   wsPort: 3100,
   mode: "automated",
   pushAfterMerge: true,
+  useMilestones: false,
   mainBranch: "main",
   models: {
     spec: "claude-sonnet-4-6",

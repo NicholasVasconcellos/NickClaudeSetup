@@ -55,6 +55,9 @@ function parseArgs(argv: string[]): Partial<OrchestratorConfig> & { noPush?: boo
       case "--no-push":
         result.pushAfterMerge = false;
         break;
+      case "--milestones":
+        result.useMilestones = true;
+        break;
       case "--main-branch":
         result.mainBranch = next;
         i++;

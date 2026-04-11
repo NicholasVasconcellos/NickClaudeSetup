@@ -12,18 +12,21 @@ import type { Task, TaskEffort } from "./types.js";
 
 // ── CLI args ────────────────────────────────────────────────────
 
-function parseArgs(): { dbPath: string } {
+function parseArgs(): { dbPath: string; useMilestones: boolean } {
   const args = process.argv.slice(2);
   let dbPath = ".orchestrator/orchestrator.db";
+  let useMilestones = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--db-path" && args[i + 1]) {
       dbPath = args[i + 1];
       i++;
+    } else if (args[i] === "--milestones") {
+      useMilestones = true;
     }
   }
 
-  return { dbPath };
+  return { dbPath, useMilestones };
 }
 
 // ── Task definitions ────────────────────────────────────────────
@@ -32,7 +35,7 @@ interface TaskDef {
   title: string;
   description: string;
   dependsOn: number[]; // references to 1-based positions in this array
-  milestone: string;
+  milestone?: string;
   effort?: TaskEffort;
 }
 
@@ -246,7 +249,7 @@ const TASK_DEFS: TaskDef[] = [
 
 // ── Seed logic (exported for reuse by demo.ts) ──────────────────
 
-export function seedDatabase(dbPath: string): { db: Database; tasks: Task[]; sessionId: number } {
+export function seedDatabase(dbPath: string, useMilestones = false): { db: Database; tasks: Task[]; sessionId: number } {
   const db = new Database(dbPath);
   db.init();
 
@@ -261,7 +264,7 @@ export function seedDatabase(dbPath: string): { db: Database; tasks: Task[]; ses
       return depTask.id;
     });
 
-    const task = db.createTask(def.title, def.description, resolvedDeps, def.milestone, def.effort);
+    const task = db.createTask(def.title, def.description, resolvedDeps, useMilestones ? def.milestone : undefined, def.effort);
     tasks.push(task);
   }
 
@@ -296,12 +299,13 @@ function printTasks(tasks: Task[]): void {
 // ── Main ────────────────────────────────────────────────────────
 
 function main(): void {
-  const { dbPath } = parseArgs();
+  const { dbPath, useMilestones } = parseArgs();
 
   console.log(chalk.bold.magenta("\n  Orchestrator Seed"));
   console.log(chalk.gray(`  DB path: ${dbPath}`));
+  if (useMilestones) console.log(chalk.gray("  Milestones: enabled"));
 
-  const { db, tasks, sessionId } = seedDatabase(dbPath);
+  const { db, tasks, sessionId } = seedDatabase(dbPath, useMilestones);
 
   printTasks(tasks);
 

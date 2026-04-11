@@ -735,7 +735,9 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
       if (h2Match && !h3Match) {
         flush();
-        currentMilestone = h2Match[1].trim();
+        if (this.config.useMilestones) {
+          currentMilestone = h2Match[1].trim();
+        }
         continue;
       }
 
