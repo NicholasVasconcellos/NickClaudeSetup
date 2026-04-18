@@ -1,0 +1,542 @@
+"use client";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+
+interface ProjectInfo {
+  name: string;
+  path: string;
+  taskCount: number;
+  lastModified: string;
+}
+
+interface ProjectSetupProps {
+  connected: boolean;
+  projectList: ProjectInfo[];
+  onCreateProject: (projectName: string, baseDir: string, planMarkdown?: string) => void;
+  onListProjects: (baseDir: string) => void;
+  createError: string | null;
+}
+
+type Tab = "create" | "open";
+
+const NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  marginBottom: 4,
+  display: "block",
+};
+
+const inputStyle = (focused: boolean, error = false): React.CSSProperties => ({
+  backgroundColor: "var(--bg-tertiary)",
+  border: `1px solid ${error ? "var(--error)" : focused ? "var(--accent)" : "var(--border)"}`,
+  borderRadius: 4,
+  padding: "8px 12px",
+  fontSize: 13,
+  color: "var(--text-primary)",
+  outline: "none",
+  width: "100%",
+  boxSizing: "border-box",
+  fontFamily: "inherit",
+});
+
+export default function ProjectSetup({
+  connected,
+  projectList,
+  onCreateProject,
+  onListProjects,
+  createError,
+}: ProjectSetupProps) {
+  const [tab, setTab] = useState<Tab>("create");
+  const [projectName, setProjectName] = useState("");
+  const [baseDir, setBaseDir] = useState("~/Developer");
+  const [planContent, setPlanContent] = useState("");
+  const [skipPlan, setSkipPlan] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // List projects when switching to open tab or on mount if open tab
+  useEffect(() => {
+    if (tab === "open" && baseDir.trim()) {
+      onListProjects(baseDir.trim());
+    }
+  }, [tab, baseDir, onListProjects]);
+
+  // --- File handling (mirrors PlanEditor) ---
+  const handleFileRead = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result;
+      if (typeof text === "string") {
+        setPlanContent(text);
+        setSkipPlan(false);
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) handleFileRead(file);
+      e.target.value = "";
+    },
+    [handleFileRead],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOver(false);
+      const file = e.dataTransfer.files[0];
+      if (file) handleFileRead(file);
+    },
+    [handleFileRead],
+  );
+
+  // --- Validation ---
+  const validateName = useCallback((name: string): string | null => {
+    if (!name.trim()) return "Project name is required";
+    if (!NAME_REGEX.test(name)) return "Must start with alphanumeric; only letters, numbers, hyphens, dots, underscores";
+    return null;
+  }, []);
+
+  const handleCreate = useCallback(() => {
+    const err = validateName(projectName);
+    if (err) {
+      setNameError(err);
+      return;
+    }
+    const plan = skipPlan ? undefined : planContent.trim() || undefined;
+    onCreateProject(projectName.trim(), baseDir.trim(), plan);
+  }, [projectName, baseDir, planContent, skipPlan, validateName, onCreateProject]);
+
+  // --- Relative date formatting ---
+  const formatDate = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      if (diffMins < 1) return "just now";
+      if (diffMins < 60) return `${diffMins}m ago`;
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+      const diffDays = Math.floor(diffHours / 24);
+      if (diffDays < 30) return `${diffDays}d ago`;
+      return d.toLocaleDateString();
+    } catch {
+      return iso;
+    }
+  };
+
+  const canCreate = projectName.trim() && baseDir.trim() && !validateName(projectName);
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "var(--bg-primary)",
+        padding: 24,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 600,
+          width: "100%",
+          display: "flex",
+          flexDirection: "column",
+          gap: 24,
+        }}
+      >
+        {/* Header */}
+        <div style={{ textAlign: "center" }}>
+          <div
+            style={{
+              fontSize: 22,
+              fontWeight: 700,
+              color: "var(--text-primary)",
+              marginBottom: 6,
+            }}
+          >
+            Orchestrator Dashboard
+          </div>
+          <div
+            style={{
+              fontSize: 13,
+              color: "var(--text-muted)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                backgroundColor: connected ? "var(--success)" : "var(--error)",
+                display: "inline-block",
+                flexShrink: 0,
+              }}
+            />
+            {connected ? "Connected" : "Disconnected"}
+          </div>
+        </div>
+
+        {/* Card */}
+        <div
+          style={{
+            backgroundColor: "var(--bg-secondary)",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            overflow: "hidden",
+          }}
+        >
+          {/* Tabs */}
+          <div
+            style={{
+              display: "flex",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            {(["create", "open"] as Tab[]).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                onMouseEnter={() => setHovered(`tab-${t}`)}
+                onMouseLeave={() => setHovered(null)}
+                style={{
+                  flex: 1,
+                  padding: "12px 0",
+                  background: "none",
+                  border: "none",
+                  borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
+                  color: tab === t ? "var(--text-primary)" : "var(--text-muted)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  transition: "color 0.15s, border-color 0.15s",
+                  ...(hovered === `tab-${t}` && tab !== t ? { color: "var(--text-secondary)" } : {}),
+                }}
+              >
+                {t === "create" ? "Create New" : "Open Existing"}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+            {tab === "create" ? (
+              <>
+                {/* Project Name */}
+                <div>
+                  <label style={labelStyle}>Project Name *</label>
+                  <input
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => {
+                      setProjectName(e.target.value);
+                      if (nameError) setNameError(validateName(e.target.value));
+                    }}
+                    onBlur={() => {
+                      setFocusedField(null);
+                      if (projectName.trim()) setNameError(validateName(projectName));
+                    }}
+                    onFocus={() => setFocusedField("name")}
+                    style={inputStyle(focusedField === "name", !!nameError)}
+                    placeholder="my-project"
+                  />
+                  {nameError && (
+                    <div style={{ fontSize: 11, color: "var(--error)", marginTop: 4 }}>
+                      {nameError}
+                    </div>
+                  )}
+                </div>
+
+                {/* Base Directory */}
+                <div>
+                  <label style={labelStyle}>Base Directory</label>
+                  <input
+                    type="text"
+                    value={baseDir}
+                    onChange={(e) => setBaseDir(e.target.value)}
+                    onFocus={() => setFocusedField("baseDir")}
+                    onBlur={() => setFocusedField(null)}
+                    style={inputStyle(focusedField === "baseDir")}
+                    placeholder="~/Developer"
+                  />
+                </div>
+
+                {/* Plan section */}
+                <div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 6,
+                    }}
+                  >
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>Plan (Markdown)</label>
+                    <label
+                      style={{
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={skipPlan}
+                        onChange={(e) => setSkipPlan(e.target.checked)}
+                        style={{ accentColor: "var(--accent)" }}
+                      />
+                      Skip — I'll add a plan later
+                    </label>
+                  </div>
+
+                  {!skipPlan && (
+                    <>
+                      <div
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        style={{
+                          position: "relative",
+                          border: dragOver
+                            ? "2px dashed var(--accent)"
+                            : "1px solid var(--border)",
+                          borderRadius: 6,
+                          backgroundColor: "#0d0d0d",
+                          transition: "border 0.15s",
+                        }}
+                      >
+                        <textarea
+                          value={planContent}
+                          onChange={(e) => setPlanContent(e.target.value)}
+                          placeholder="Paste or drop a markdown plan here..."
+                          onFocus={() => setFocusedField("plan")}
+                          onBlur={() => setFocusedField(null)}
+                          style={{
+                            width: "100%",
+                            minHeight: 180,
+                            padding: 12,
+                            backgroundColor: "transparent",
+                            color: "var(--text-primary)",
+                            border: "none",
+                            outline: "none",
+                            resize: "vertical",
+                            fontFamily: "'SF Mono', 'Fira Code', monospace",
+                            fontSize: 13,
+                            lineHeight: 1.5,
+                            boxSizing: "border-box",
+                          }}
+                        />
+                        {dragOver && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              backgroundColor: "rgba(59,130,246,0.08)",
+                              borderRadius: 6,
+                              pointerEvents: "none",
+                              color: "var(--accent)",
+                              fontSize: 13,
+                              fontWeight: 500,
+                            }}
+                          >
+                            Drop .md file here
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Plan footer */}
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginTop: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".md,.markdown,.txt"
+                            onChange={handleFileChange}
+                            style={{ display: "none" }}
+                          />
+                          <button
+                            onClick={() => fileInputRef.current?.click()}
+                            onMouseEnter={() => setHovered("upload")}
+                            onMouseLeave={() => setHovered(null)}
+                            style={{
+                              backgroundColor: hovered === "upload" ? "var(--bg-tertiary)" : "transparent",
+                              color: "var(--text-secondary)",
+                              border: "1px solid var(--border)",
+                              borderRadius: 4,
+                              padding: "5px 10px",
+                              fontSize: 12,
+                              fontWeight: 500,
+                              cursor: "pointer",
+                              transition: "background-color 0.15s",
+                            }}
+                          >
+                            Upload .md
+                          </button>
+                        </div>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          {planContent.length.toLocaleString()} chars
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Error display */}
+                {createError && (
+                  <div
+                    style={{
+                      backgroundColor: "rgba(239,68,68,0.1)",
+                      border: "1px solid var(--error)",
+                      borderRadius: 6,
+                      padding: "8px 12px",
+                      fontSize: 12,
+                      color: "var(--error)",
+                    }}
+                  >
+                    {createError}
+                  </div>
+                )}
+
+                {/* Create button */}
+                <button
+                  onClick={handleCreate}
+                  disabled={!canCreate}
+                  onMouseEnter={() => setHovered("create")}
+                  onMouseLeave={() => setHovered(null)}
+                  style={{
+                    backgroundColor: !canCreate
+                      ? "var(--bg-tertiary)"
+                      : hovered === "create"
+                        ? "var(--accent)"
+                        : "var(--accent)dd",
+                    color: !canCreate ? "var(--text-muted)" : "#fff",
+                    border: "none",
+                    borderRadius: 6,
+                    padding: "10px 0",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    cursor: !canCreate ? "not-allowed" : "pointer",
+                    opacity: !canCreate ? 0.5 : 1,
+                    transition: "background-color 0.15s, opacity 0.15s",
+                    width: "100%",
+                  }}
+                >
+                  Create Project
+                </button>
+              </>
+            ) : (
+              /* Open Existing tab */
+              <>
+                {projectList.length === 0 ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "40px 0",
+                      color: "var(--text-muted)",
+                      fontSize: 13,
+                    }}
+                  >
+                    No projects found in {baseDir}
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {projectList.map((project) => (
+                      <button
+                        key={project.path}
+                        onMouseEnter={() => setHovered(`proj-${project.path}`)}
+                        onMouseLeave={() => setHovered(null)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          backgroundColor:
+                            hovered === `proj-${project.path}`
+                              ? "var(--bg-tertiary)"
+                              : "var(--bg-primary)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "12px 16px",
+                          cursor: "pointer",
+                          transition: "background-color 0.15s",
+                          width: "100%",
+                          textAlign: "left",
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{
+                              fontSize: 14,
+                              fontWeight: 600,
+                              color: "var(--text-primary)",
+                              marginBottom: 2,
+                            }}
+                          >
+                            {project.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            {project.path}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
+                          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                            {project.taskCount} task{project.taskCount !== 1 ? "s" : ""}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            {formatDate(project.lastModified)}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -9,13 +9,14 @@ type TaskState =
   | "spec"
   | "executing"
   | "reviewing"
+  | "documenting"
   | "done"
   | "merged"
   | "failed"
   | "skipped"
   | "paused";
 
-type TaskPhase = "spec" | "execute" | "review";
+type TaskPhase = "spec" | "execute" | "review" | "document";
 
 type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: string; newState: TaskState; title?: string }
@@ -35,7 +36,12 @@ type WSEventFromServer =
   | { type: "task:needs_review"; taskId: number; gitDiff: string; agentLogSummary: string }
   | { type: "suggestion:new"; title: string; description: string; filePath: string }
   | { type: "run:started"; mode: "automated" | "human_review"; sessionId: number }
-  | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" };
+  | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" }
+  | { type: "project:created"; projectDir: string; dbPath: string; taskCount: number }
+  | { type: "project:create_error"; error: string }
+  | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
+  | { type: "project:info"; name: string; dir: string }
+  | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };
 
 interface TreeNodeWS {
   path: string;
@@ -74,7 +80,9 @@ type WSEventFromClient =
   | { type: "prompt:submit"; taskId: number; prompt: string; threadMode: "continue" | "new" }
   | { type: "task:create"; title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }
   | { type: "plan:load"; markdown: string }
-  | { type: "run:start"; mode: "automated" | "human_review" };
+  | { type: "run:start"; mode: "automated" | "human_review" }
+  | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string }
+  | { type: "project:list"; baseDir: string };
 
 export interface PhaseContextInfo {
   phase: string;
@@ -137,6 +145,9 @@ export interface WebSocketState {
   planStatus: { loaded: boolean; taskCount: number };
   pendingReviews: Map<number, ReviewData>;
   suggestions: Suggestion[];
+  projectInfo: { name: string; dir: string } | null;
+  projectList: Array<{ name: string; path: string; taskCount: number; lastModified: string }>;
+  projectError: string | null;
   sendCommand: (event: WSEventFromClient) => void;
 }
 
@@ -165,6 +176,9 @@ export function useWebSocket(url: string): WebSocketState {
   const [planStatus, setPlanStatus] = useState<{ loaded: boolean; taskCount: number }>({ loaded: false, taskCount: 0 });
   const [pendingReviews, setPendingReviews] = useState<Map<number, ReviewData>>(new Map());
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [projectInfo, setProjectInfo] = useState<{ name: string; dir: string } | null>(null);
+  const [projectList, setProjectList] = useState<Array<{ name: string; path: string; taskCount: number; lastModified: string }>>([]);
+  const [projectError, setProjectError] = useState<string | null>(null);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     let data: WSEventFromServer;
@@ -396,6 +410,32 @@ export function useWebSocket(url: string): WebSocketState {
         // Branch info derived from task states; no-op for dedicated events
         break;
       }
+
+      case "project:created": {
+        setProjectInfo({ name: data.projectDir.split("/").pop() ?? "", dir: data.projectDir });
+        setProjectError(null);
+        break;
+      }
+
+      case "project:create_error": {
+        setProjectError(data.error);
+        break;
+      }
+
+      case "project:list_result": {
+        setProjectList(data.projects);
+        break;
+      }
+
+      case "project:info": {
+        setProjectInfo({ name: data.name, dir: data.dir });
+        break;
+      }
+
+      case "run:notification": {
+        // Could show as toast, for now no-op
+        break;
+      }
     }
   }, []);
 
@@ -463,6 +503,9 @@ export function useWebSocket(url: string): WebSocketState {
     planStatus,
     pendingReviews,
     suggestions,
+    projectInfo,
+    projectList,
+    projectError,
     sendCommand,
   };
 }

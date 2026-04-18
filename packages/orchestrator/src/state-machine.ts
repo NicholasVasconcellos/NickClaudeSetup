@@ -13,28 +13,31 @@ const HAPPY_PATH: TaskState[] = [
   "spec",
   "executing",
   "reviewing",
+  "documenting",
   "done",
   "merged",
 ];
 
 const TRANSITIONS: Record<TaskState, Set<TaskState>> = {
-  pending:   new Set(["spec",      "failed", "paused", "skipped"]),
-  spec:      new Set(["executing", "failed", "paused", "skipped"]),
-  executing: new Set(["reviewing", "failed", "paused", "skipped"]),
-  reviewing: new Set(["done",      "failed", "paused", "skipped"]),
-  done:      new Set(["merged",    "failed",           "skipped"]),
-  merged:    new Set([                                          ]),
-  failed:    new Set([                                          ]),
-  skipped:   new Set([                                          ]),
-  paused:    new Set(["executing", "failed",           "skipped"]),
+  pending:      new Set(["spec",        "failed", "paused", "skipped"]),
+  spec:         new Set(["executing",   "failed", "paused", "skipped"]),
+  executing:    new Set(["reviewing",   "failed", "paused", "skipped"]),
+  reviewing:    new Set(["documenting", "failed", "paused", "skipped"]),
+  documenting:  new Set(["done",        "failed", "paused", "skipped"]),
+  done:         new Set(["merged",      "failed",           "skipped"]),
+  merged:       new Set([                                            ]),
+  failed:       new Set([                                            ]),
+  skipped:      new Set([                                            ]),
+  paused:       new Set(["executing",   "failed",           "skipped"]),
 };
 
 // ── State → Phase mapping ─────────────────────────────────────
 
 const STATE_TO_PHASE: Partial<Record<TaskState, TaskPhase>> = {
-  spec:      "spec",
-  executing: "execute",
-  reviewing: "review",
+  spec:        "spec",
+  executing:   "execute",
+  reviewing:   "review",
+  documenting: "document",
 };
 
 // ── StateMachine ─────────────────────────────────────────────

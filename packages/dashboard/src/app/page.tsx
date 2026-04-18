@@ -15,9 +15,10 @@ import ReviewPanel from "@/components/ReviewPanel";
 import Suggestions from "@/components/Suggestions";
 import PlanningChat from "@/components/PlanningChat";
 import type { ChatMessage } from "@/components/PlanningChat";
+import ProjectSetup from "@/components/ProjectSetup";
 
 export default function DashboardPage() {
-  const { connected, tasks, logs, layers, costs, summary, fileTree, planStatus, promptResponses, pendingReviews, suggestions, sendCommand } =
+  const { connected, tasks, logs, layers, costs, summary, fileTree, planStatus, promptResponses, pendingReviews, suggestions, projectInfo, projectList, projectError, sendCommand } =
     useWebSocket("ws://localhost:3100");
 
   const [selectedTaskId, setSelectedTaskId] = useState<number | undefined>();
@@ -32,6 +33,20 @@ export default function DashboardPage() {
   const handleCreateTask = (taskDef: { title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }) => {
     sendCommand({ type: "task:create", ...taskDef });
     setShowAddTask(false);
+  };
+
+  const handleCreateProject = (projectName: string, baseDir: string, planMarkdown?: string) => {
+    sendCommand({ type: "project:create", projectName, baseDir, planMarkdown });
+  };
+
+  const handleListProjects = (baseDir: string) => {
+    sendCommand({ type: "project:list", baseDir });
+  };
+
+  const handleOpenInVSCode = () => {
+    if (projectInfo?.dir) {
+      window.open(`vscode://file/${encodeURIComponent(projectInfo.dir)}`);
+    }
   };
 
   const handleExecute = (mode: "automated" | "human_review") => {
@@ -179,6 +194,18 @@ export default function DashboardPage() {
     return first;
   }, [pendingReviews]);
 
+  if (tasks.size === 0 && !projectInfo) {
+    return (
+      <ProjectSetup
+        connected={connected}
+        projectList={projectList}
+        onCreateProject={handleCreateProject}
+        onListProjects={handleListProjects}
+        createError={projectError}
+      />
+    );
+  }
+
   return (
     <div
       style={{
@@ -210,6 +237,11 @@ export default function DashboardPage() {
             }}
           >
             Claude Orchestrator
+            {projectInfo && (
+              <span style={{ fontWeight: 400, color: "var(--text-muted)", marginLeft: 8 }}>
+                / {projectInfo.name}
+              </span>
+            )}
           </h1>
           <div
             style={{
@@ -260,6 +292,23 @@ export default function DashboardPage() {
               ${costs.totalCost.toFixed(4)}
             </span>
           </span>
+          {projectInfo && (
+            <button
+              onClick={handleOpenInVSCode}
+              title={`Open ${projectInfo.dir} in VS Code`}
+              style={{
+                background: "none",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+            >
+              Open in VS Code
+            </button>
+          )}
           <button
             onClick={() => setShowPlanning(prev => !prev)}
             style={{

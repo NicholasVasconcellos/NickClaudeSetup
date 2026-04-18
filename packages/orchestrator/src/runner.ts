@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { Database } from "./db.js";
 import { GitManager } from "./git.js";
+import { parsePlanToTasks, scaffoldProject, listProjects, agentParsePlan } from "./project.js";
 import { ClaudeRunner } from "./claude.js";
 import { StateMachine } from "./state-machine.js";
 import { EventBus } from "./ws-server.js";
@@ -86,6 +87,13 @@ export class Runner {
       this.handleCommand(event).catch((err) => {
         console.error("[runner] handleCommand error:", err);
       });
+    });
+
+    // Broadcast current project info to newly connected clients
+    this.events.broadcast({
+      type: "project:info",
+      name: path.basename(this.config.projectDir),
+      dir: this.config.projectDir,
     });
 
     // Verify Claude CLI is available
@@ -292,6 +300,7 @@ export class Runner {
     spec: "spec",
     execute: "executing",
     review: "reviewing",
+    document: "documenting",
   };
 
   private async runPhase(
@@ -355,7 +364,7 @@ export class Runner {
       console.log(`[task:${taskId}] worktree created at ${wt.worktreePath}`);
       this.events.branchUpdate(taskId, wt.branch, "created");
 
-      for (const phase of ["spec", "execute", "review"] as const) {
+      for (const phase of ["spec", "execute", "review", "document"] as const) {
         await this.runPhase(taskId, phase, wt.worktreePath, signal);
         if (signal.aborted) return;
       }
@@ -683,7 +692,7 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
       ? `\n\n## Dependency files\n${files.map(f => `@${f}`).join(" ")}`
       : "";
 
-    // Invoke the corresponding skill for spec/execute/review; merge has no skill
+    // Invoke the corresponding skill for spec/execute/review/document; merge has no skill
     const skillInvocation = phase !== "merge" ? `/${phase}\n\n` : "";
 
     return `${skillInvocation}${taskSection}${depTitleSection}${depFileRefs}`;
@@ -712,56 +721,58 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
   // ── loadPlanFromMarkdown ────────────────────────────────────
 
   private loadPlanFromMarkdown(markdown: string): number {
-    const lines = markdown.split("\n");
-    const taskDefs: Array<{ title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }> = [];
-    let currentTitle = "";
-    let currentLines: string[] = [];
-    let currentMilestone: string | undefined;
+    const result = parsePlanToTasks(this.db, markdown, this.config.useMilestones);
 
-    const flush = () => {
-      if (currentTitle) {
-        const desc = currentLines.join("\n").trim();
-        const depMatch = desc.match(/depends?\s*on:?\s*(#\d+(?:\s*,\s*#\d+)*)/i);
-        const deps = depMatch ? depMatch[1].match(/#(\d+)/g)?.map(d => parseInt(d.slice(1))) ?? [] : [];
-        taskDefs.push({ title: currentTitle, description: desc, dependsOn: deps, milestone: currentMilestone });
-      }
-      currentTitle = "";
-      currentLines = [];
-    };
-
-    for (const line of lines) {
-      const h2Match = line.match(/^##\s+(.+)/);
-      const h3Match = line.match(/^###\s+(.+)/);
-
-      if (h2Match && !h3Match) {
-        flush();
-        if (this.config.useMilestones) {
-          currentMilestone = h2Match[1].trim();
-        }
-        continue;
-      }
-
-      if (h3Match) {
-        flush();
-        currentTitle = h3Match[1].trim();
-        continue;
-      }
-
-      if (currentTitle) {
-        currentLines.push(line);
-      }
+    if (result.errors.length > 0) {
+      throw new Error(`Plan parsing errors:\n${result.errors.join("\n")}`);
     }
-    flush();
 
-    let created = 0;
-    for (const def of taskDefs) {
-      const task = this.db.createTask(def.title, def.description, def.dependsOn, def.milestone);
+    // Emit WS events for each created task
+    for (const task of result.tasks) {
       this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
       this.events.taskCreated(task.id, task.title);
-      created++;
     }
 
-    return created;
+    return result.taskCount;
+  }
+
+  // ── loadPlanWithAgent ────────────────────────────────────────
+
+  /**
+   * Spawns a Claude agent with /get-tasks skill + ultrathink to parse
+   * a plan into structured tasks. The most critical step of project setup.
+   */
+  async loadPlanWithAgent(planContent: string): Promise<number> {
+    console.log("[runner] spawning agent to decompose plan (ultrathink)...");
+
+    const result = await agentParsePlan({
+      claude: this.claude,
+      db: this.db,
+      planContent,
+      projectDir: this.config.projectDir,
+      model: this.config.models.execute, // use execute model for plan parsing
+      effort: "max", // ultrathink — most important step
+      timeout: this.config.taskTimeout,
+      onOutput: (line) => {
+        this.events.taskLogAppend(-1, line); // -1 = plan parsing pseudo-task
+      },
+    });
+
+    if (result.errors.length > 0) {
+      const errMsg = result.errors.join("\n");
+      this.events.notify(`Plan parsing errors:\n${errMsg}`, "error");
+      throw new Error(`Agent plan parsing errors:\n${errMsg}`);
+    }
+
+    // Emit WS events for each created task
+    for (const task of result.tasks) {
+      this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+      this.events.taskCreated(task.id, task.title);
+    }
+
+    this.events.planLoaded(result.taskCount);
+    console.log(`[runner] agent created ${result.taskCount} tasks from plan`);
+    return result.taskCount;
   }
 
   // ── handleCommand ─────────────────────────────────────────
@@ -861,8 +872,7 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
       case "plan:load": {
         const { markdown } = event as { type: "plan:load"; markdown: string };
         try {
-          const taskCount = this.loadPlanFromMarkdown(markdown);
-          this.events.planLoaded(taskCount);
+          const taskCount = await this.loadPlanWithAgent(markdown);
           console.log(`[runner] loaded ${taskCount} tasks from plan`);
         } catch (err) {
           console.error("[runner] plan:load failed:", err);
@@ -892,6 +902,60 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           console.log(`[runner] created task ${task.id}: ${title}`);
         } catch (err) {
           console.error("[runner] task:create failed:", err);
+        }
+        break;
+      }
+
+      case "project:create": {
+        const { projectName, baseDir, planMarkdown } = event as {
+          type: "project:create";
+          projectName: string;
+          baseDir: string;
+          planMarkdown?: string;
+        };
+        try {
+          const result = scaffoldProject({ projectName, baseDir });
+
+          // Re-point Runner to new project
+          this.db.close();
+          this.config.projectDir = result.projectDir;
+          this.config.dbPath = result.dbPath;
+          this.db = new Database(result.dbPath);
+          this.db.init();
+          this.git = new GitManager(this.config);
+
+          let taskCount = 0;
+          if (planMarkdown) {
+            taskCount = await this.loadPlanWithAgent(planMarkdown);
+          }
+
+          this.events.broadcast({
+            type: "project:created",
+            projectDir: result.projectDir,
+            dbPath: result.dbPath,
+            taskCount,
+          });
+          this.events.broadcast({
+            type: "project:info",
+            name: projectName,
+            dir: result.projectDir,
+          });
+          console.log(`[runner] created project: ${result.projectDir} (${taskCount} tasks)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({ type: "project:create_error", error: msg });
+          console.error("[runner] project:create failed:", err);
+        }
+        break;
+      }
+
+      case "project:list": {
+        const { baseDir } = event as { type: "project:list"; baseDir: string };
+        try {
+          const projects = listProjects(baseDir);
+          this.events.broadcast({ type: "project:list_result", projects });
+        } catch (err) {
+          console.error("[runner] project:list failed:", err);
         }
         break;
       }

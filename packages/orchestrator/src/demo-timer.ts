@@ -407,6 +407,7 @@ const MODELS: Record<TaskPhase, string> = {
   execute: "claude-sonnet-4-6",
   review: "claude-sonnet-4-6",
   merge: "claude-sonnet-4-6",
+  document: "claude-sonnet-4-6",
 };
 
 // ── Phase simulations ───────────────────────────────────────────

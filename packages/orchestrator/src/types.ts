@@ -15,13 +15,14 @@ export type TaskState =
   | "spec"
   | "executing"
   | "reviewing"
+  | "documenting"
   | "done"
   | "merged"
   | "failed"
   | "skipped"
   | "paused";
 
-export type TaskPhase = "spec" | "execute" | "review" | "merge";
+export type TaskPhase = "spec" | "execute" | "review" | "document" | "merge";
 
 export type TaskEffort = "low" | "medium" | "high" | "max";
 
@@ -155,7 +156,11 @@ export type WSEventFromServer =
   | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" }
   | { type: "skills:list_result"; skills: Array<{ name: string; hasVariations: boolean }> }
   | { type: "skills:content"; skillName: string; content: string; variations: Array<{ name: string; content: string }> }
-  | { type: "files:tree_result"; tree: Array<{ path: string; type: "file" | "directory"; children?: any[] }> };
+  | { type: "files:tree_result"; tree: Array<{ path: string; type: "file" | "directory"; children?: any[] }> }
+  | { type: "project:created"; projectDir: string; dbPath: string; taskCount: number }
+  | { type: "project:create_error"; error: string }
+  | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
+  | { type: "project:info"; name: string; dir: string };
 
 export type WSEventFromClient =
   | { type: "task:pause"; taskId: number }
@@ -174,7 +179,9 @@ export type WSEventFromClient =
   | { type: "skills:save"; skillName: string; content: string }
   | { type: "skills:save_variation"; skillName: string; variationName: string; content: string }
   | { type: "skills:activate"; skillName: string; variationName: string }
-  | { type: "files:tree" };
+  | { type: "files:tree" }
+  | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string }
+  | { type: "project:list"; baseDir: string };
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -193,6 +200,7 @@ export interface OrchestratorConfig {
     spec: string;
     execute: string;
     review: string;
+    document: string;
     merge: string;
     learning: string;
   };
@@ -214,6 +222,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     spec: "claude-sonnet-4-6",
     execute: "claude-sonnet-4-6",
     review: "claude-sonnet-4-6",
+    document: "claude-sonnet-4-6",
     merge: "claude-opus-4-6",
     learning: "claude-opus-4-6",
   },
@@ -221,6 +230,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     spec: "medium",
     execute: "high",
     review: "medium",
+    document: "medium",
     merge: "high",
   },
 };

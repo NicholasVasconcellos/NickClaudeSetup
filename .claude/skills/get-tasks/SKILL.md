@@ -1,28 +1,34 @@
 ---
 name: get-tasks
 description: >
-  Break a PRD, issue, or user description into atomic tasks
-  with dependency ordering. Outputs structured JSON task plan.
+  Break a PRD, issue, or user description into self-contained tasks
+  with dependencies. Outputs structured JSON task plan.
   Trigger on: /get-tasks
 disable-model-invocation: true
 ---
 
 # get-tasks
 
-Analyze the project and decompose it into atomic tasks.
+Analyze the project and decompose it into self-contained tasks.
 
 ## Inputs
 
-You will receive one of: a PRD document, a GitHub issue, a user description, or a combination. Read all provided inputs before doing anything else.
+Read all provided inputs before doing anything else.
 
-## Step 1 — Generate or update CODEBASE.md
+## Step 1 — Generate or update CODEBASE.md (subagent)
 
-If `CODEBASE.md` does not exist at the project root, create it now. If it exists but is stale (missing files or directories that clearly exist), update it.
+Spawn a subagent to generate or update `CODEBASE.md`. instruct subagent to:
+
+- Create `CODEBASE.md` if not existing.
+- Will serve a map file for agent reducing the need to scan the whole codebae, overall map of the codebase with hierarchical structure. Based on the specification of the plan document.
+- Contains coding, style, guidelines and conventions consistent troughout the codebase. Based on the specific plan and libraries / stack used.
+- Any addiontal High level information that should be avaialbe project wide for subsequent agents working on new features.
+- Ensure it is as consise as possible with only meaningfull information as briefly as possible to minimze context consumption.
 
 CODEBASE.md must be:
 - Hierarchical: reflect the actual directory tree
 - Scannable: use concise annotations, not prose
-- Accurate: walk the real file system, do not guess
+- Accurate: based on the real filesystem
 
 Format example:
 ```
@@ -39,34 +45,31 @@ tests/
     auth.test.ts      — Auth route integration tests
 ```
 
-## Step 2 — Fetch relevant documentation
+## Step 2 — Fetch relevant documentation (subagent)
 
-Use Context7 to fetch documentation for every library, framework, or SDK that the task involves. Do this before forming any plan. Confirm the version pinned in package.json (or equivalent) matches a current, widely-supported release. Note any version concerns in your output.
+Spawn a subagent to use Context7 to fetch documentation for every library, framework, or SDK that the project will use based on the plan. The subagent should confirm the version pinned in package.json (or equivalent) matches a current, widely-supported release, and note any version concerns. 
 
-## Step 3 — Analyze requirements
+Subagent will create a `docs` directory in the root (append to it if existing), and place instructions grouped by the library and use case in their own folders, with updated function syntax and references for it to be used or any other relevant context gathered from fetching the online documentations.
 
-Read the inputs again. Identify:
-- The end goal (what done looks like)
-- The domain areas involved (auth, data layer, UI, infra, etc.)
-- Constraints (existing conventions, tech stack, deployment target)
-- Unknowns that need a decision before work can begin
+> **Steps 1 and 2 run in parallel as independent subagents.** Move on to step 3 after these are done
 
-If critical unknowns exist, list them and stop — ask the user before continuing.
 
-## Step 4 — Decompose into tasks
 
-Decompose the work into a flat list of tasks. A task must be:
-- **Atomic**: one logical unit of work, completable by one agent in one session
-- **Concrete**: the description includes enough context to implement without re-reading the full PRD
-- **Verifiable**: acceptance criteria are explicit and testable
+## Step 3 — Decompose into tasks
 
-Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task to keep the list short. There is no upper or lower limit on task count — decompose until every task is truly atomic.
+Decompose the work into a flat list of tasks. Each task should read as if a project manager is handing it off to a lead senior engineer. A task must be:
+- **Self-contained**: full context about what to build and how it fits into the overall project — a fresh engineer reading only this description should know exactly what's needed
+- **Concrete**: specific about the expected outcome — what it looks like when done, what it produces, what changes in the codebase
+- **Scoped**: one logical unit of work, implementable in a single session
 
-For each task, identify which other tasks (by title) must complete before it can start.
+Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task to keep the list short. There is no upper or lower limit on task count — decompose until every task is a single coherent unit of work and the tasks fufill the scope of the project no matter how large or small.
 
-## Step 5 — Output
+For each task, list what other task or tasks it depends on (by title), list which other task should be done before it can start.
 
-Output the task plan as a single JSON object and nothing else after it. Do not wrap it in a code block — output raw JSON.
+## Step 4 — Output
+
+Output the tasks single JSON object. 
+Create `/tasks/tasks.json` in root with the raw json. 
 
 Schema:
 ```json
@@ -74,7 +77,8 @@ Schema:
   "tasks": [
     {
       "title": "string",
-      "description": "string — what to build and the exact acceptance criteria",
+      "description": "string — what to build, how it fits into the project, and what the expected outcome looks like",
+      "contextFiles": ["path to file1", "path to file 2", "..."],
       "dependsOn": ["task title", "..."]
     }
   ]
@@ -82,11 +86,12 @@ Schema:
 ```
 
 Rules for the JSON output:
-- `title` is unique across all tasks
-- `description` is self-contained — a fresh agent must be able to read it and know exactly what to implement and how to verify it is done
-- `dependsOn` references `title` strings exactly as written; use `[]` if there are no dependencies.
+- `title`: unique across all tasks
+- `description`: full deatiled, self-contained, written as a PM handoff to a senior engineer, with full context about the feature, how it fits into the project, and what done looks like
+- `dependsOn` references `title` strings exactly as written; use `[]` if there are no dependencies. only list direct dependencies, should follow naturally from the logical flow of creating the task list.
 
-## Step 6 — Post-output checklist
+
+## Step 5 — Post-output checklist
 
 After outputting the JSON, append a plain-text section with these items:
 
@@ -101,5 +106,5 @@ List every action the user must take manually before execution can begin — API
 - Do not write any code.
 - Do not create any files other than CODEBASE.md.
 - Do not ask clarifying questions unless there are blocking unknowns identified in Step 3.
-- Do not pad the task list with generic tasks like "write tests" or "add logging" — tests belong inside each task's acceptance criteria; logging is part of implementation.
+- Do not pad the task list with generic tasks like "write tests" or "add logging" — testing is handled by a dedicated spec phase; logging is part of implementation.
 - Do not invent constraints that are not in the inputs.

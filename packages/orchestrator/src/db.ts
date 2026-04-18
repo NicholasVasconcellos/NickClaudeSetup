@@ -420,6 +420,12 @@ export class Database {
 
   // ── Lifecycle ───────────────────────────────────────────────
 
+  updateTaskDependencies(taskId: number, dependsOn: number[]): void {
+    this.db
+      .prepare(`UPDATE tasks SET depends_on = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(JSON.stringify(dependsOn), taskId);
+  }
+
   close(): void {
     this.db.close();
   }
