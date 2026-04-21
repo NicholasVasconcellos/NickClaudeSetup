@@ -18,6 +18,21 @@ type TaskState =
 
 type TaskPhase = "spec" | "execute" | "review" | "document";
 
+export type ProjectCreateStage = "scaffolding" | "scaffolded" | "parsing_plan" | "plan_parsed" | "done";
+export type ProjectCreateErrorKind = "collision" | "plan_read" | "plan_parse" | "scaffold" | "concurrent" | "unknown";
+
+export interface ProjectCreateState {
+  active: boolean;
+  projectName: string | null;
+  stage: ProjectCreateStage | null;
+  message: string | null;
+  logs: string[];
+  taskCount: number;
+  error: { message: string; kind?: ProjectCreateErrorKind; projectDir?: string } | null;
+}
+
+const MAX_CREATE_LOG_LINES = 500;
+
 type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: string; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
@@ -38,7 +53,9 @@ type WSEventFromServer =
   | { type: "run:started"; mode: "automated" | "human_review"; sessionId: number }
   | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" }
   | { type: "project:created"; projectDir: string; dbPath: string; taskCount: number }
-  | { type: "project:create_error"; error: string }
+  | { type: "project:create_error"; error: string; kind?: ProjectCreateErrorKind; projectDir?: string }
+  | { type: "project:create_progress"; stage: ProjectCreateStage; projectName: string; projectDir?: string; taskCount?: number; message?: string }
+  | { type: "project:create_log"; projectName: string; line: string }
   | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
   | { type: "project:info"; name: string; dir: string }
   | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };
@@ -148,8 +165,19 @@ export interface WebSocketState {
   projectInfo: { name: string; dir: string } | null;
   projectList: Array<{ name: string; path: string; taskCount: number; lastModified: string }>;
   projectError: string | null;
+  projectCreateState: ProjectCreateState;
   sendCommand: (event: WSEventFromClient) => void;
 }
+
+const initialCreateState: ProjectCreateState = {
+  active: false,
+  projectName: null,
+  stage: null,
+  message: null,
+  logs: [],
+  taskCount: 0,
+  error: null,
+};
 
 export function useWebSocket(url: string): WebSocketState {
   const socketRef = useRef<WebSocket | null>(null);
@@ -179,6 +207,7 @@ export function useWebSocket(url: string): WebSocketState {
   const [projectInfo, setProjectInfo] = useState<{ name: string; dir: string } | null>(null);
   const [projectList, setProjectList] = useState<Array<{ name: string; path: string; taskCount: number; lastModified: string }>>([]);
   const [projectError, setProjectError] = useState<string | null>(null);
+  const [projectCreateState, setProjectCreateState] = useState<ProjectCreateState>(initialCreateState);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     let data: WSEventFromServer;
@@ -414,11 +443,50 @@ export function useWebSocket(url: string): WebSocketState {
       case "project:created": {
         setProjectInfo({ name: data.projectDir.split("/").pop() ?? "", dir: data.projectDir });
         setProjectError(null);
+        setProjectCreateState((prev) => ({
+          ...prev,
+          active: false,
+          stage: "done",
+          taskCount: data.taskCount,
+          message: "Project ready.",
+          error: null,
+        }));
         break;
       }
 
       case "project:create_error": {
         setProjectError(data.error);
+        setProjectCreateState((prev) => ({
+          ...prev,
+          active: false,
+          error: { message: data.error, kind: data.kind, projectDir: data.projectDir },
+        }));
+        break;
+      }
+
+      case "project:create_progress": {
+        setProjectCreateState((prev) => ({
+          ...prev,
+          active: data.stage !== "done",
+          projectName: data.projectName,
+          stage: data.stage,
+          message: data.message ?? prev.message,
+          taskCount: data.taskCount ?? prev.taskCount,
+          // Reset logs + error when a new create starts
+          logs: prev.projectName !== data.projectName && data.stage === "scaffolding" ? [] : prev.logs,
+          error: prev.projectName !== data.projectName && data.stage === "scaffolding" ? null : prev.error,
+        }));
+        break;
+      }
+
+      case "project:create_log": {
+        setProjectCreateState((prev) => {
+          const nextLogs = [...prev.logs, data.line];
+          if (nextLogs.length > MAX_CREATE_LOG_LINES) {
+            nextLogs.splice(0, nextLogs.length - MAX_CREATE_LOG_LINES);
+          }
+          return { ...prev, logs: nextLogs };
+        });
         break;
       }
 
@@ -484,6 +552,18 @@ export function useWebSocket(url: string): WebSocketState {
   }, [connect]);
 
   const sendCommand = useCallback((event: WSEventFromClient) => {
+    if (event.type === "project:create") {
+      setProjectCreateState({
+        active: true,
+        projectName: event.projectName,
+        stage: null,
+        message: "Sending request...",
+        logs: [],
+        taskCount: 0,
+        error: null,
+      });
+      setProjectError(null);
+    }
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify(event));
     }
@@ -506,6 +586,7 @@ export function useWebSocket(url: string): WebSocketState {
     projectInfo,
     projectList,
     projectError,
+    projectCreateState,
     sendCommand,
   };
 }

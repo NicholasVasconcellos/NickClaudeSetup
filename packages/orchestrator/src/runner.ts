@@ -43,6 +43,7 @@ export class Runner {
   private runResolve: (() => void) | null;
   private notifications: string[];
   private pendingApprovals: Map<number, () => void>;
+  private creatingProject: string | null;
 
   private config: OrchestratorConfig;
 
@@ -67,6 +68,7 @@ export class Runner {
     this.runResolve = null;
     this.notifications = [];
     this.pendingApprovals = new Map();
+    this.creatingProject = null;
   }
 
   // ── init ──────────────────────────────────────────────────
@@ -920,6 +922,17 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           planMarkdown?: string;
           planPath?: string;
         };
+
+        if (this.creatingProject) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "concurrent",
+            error: `Another project creation is already in progress (${this.creatingProject}). Wait for it to finish or restart the server.`,
+          });
+          break;
+        }
+        this.creatingProject = projectName;
+
         try {
           // planPath takes precedence over pasted markdown
           let effectivePlan: string | undefined = planMarkdown;
@@ -933,13 +946,46 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
               const msg = err instanceof Error ? err.message : String(err);
               this.events.broadcast({
                 type: "project:create_error",
+                kind: "plan_read",
                 error: `Could not read plan file at ${resolvedPath}: ${msg}`,
               });
               return;
             }
           }
 
-          const result = scaffoldProject({ projectName, baseDir });
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "scaffolding",
+            projectName,
+            message: `Scaffolding ${projectName} in ${baseDir}...`,
+          });
+
+          let result;
+          try {
+            result = scaffoldProject({ projectName, baseDir });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const collision = /already exists and is not empty/i.test(msg);
+            const attemptedDir = path.resolve(
+              baseDir.startsWith("~") ? path.join(os.homedir(), baseDir.slice(1)) : baseDir,
+            );
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: collision ? "collision" : "scaffold",
+              error: msg,
+              projectDir: attemptedDir,
+            });
+            console.error("[runner] project:create scaffold failed:", err);
+            return;
+          }
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "scaffolded",
+            projectName,
+            projectDir: result.projectDir,
+            message: `Scaffold complete at ${result.projectDir}.`,
+          });
 
           // Re-point Runner to new project
           this.db.close();
@@ -951,9 +997,70 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
           let taskCount = 0;
           if (effectivePlan) {
-            taskCount = await this.loadPlanWithAgent(effectivePlan);
+            this.events.broadcast({
+              type: "project:create_progress",
+              stage: "parsing_plan",
+              projectName,
+              projectDir: result.projectDir,
+              message: "Parsing plan with Claude (ultrathink). This may take several minutes...",
+            });
+            console.log("[runner] spawning agent to decompose plan (ultrathink)...");
+
+            const parseResult = await agentParsePlan({
+              claude: this.claude,
+              db: this.db,
+              planContent: effectivePlan,
+              projectDir: result.projectDir,
+              model: this.config.models.execute,
+              effort: "max",
+              timeout: this.config.taskTimeout,
+              onOutput: (line) => {
+                this.events.broadcast({
+                  type: "project:create_log",
+                  projectName,
+                  line,
+                });
+              },
+            });
+
+            if (parseResult.errors.length > 0) {
+              const errMsg = parseResult.errors.join("\n");
+              this.events.broadcast({
+                type: "project:create_error",
+                kind: "plan_parse",
+                error: `Plan parsing errors:\n${errMsg}`,
+                projectDir: result.projectDir,
+              });
+              console.error("[runner] plan parse failed:", errMsg);
+              return;
+            }
+
+            for (const task of parseResult.tasks) {
+              this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+              this.events.taskCreated(task.id, task.title);
+            }
+            taskCount = parseResult.taskCount;
+            this.events.planLoaded(taskCount);
+            console.log(`[runner] agent created ${taskCount} tasks from plan`);
+
+            this.events.broadcast({
+              type: "project:create_progress",
+              stage: "plan_parsed",
+              projectName,
+              projectDir: result.projectDir,
+              taskCount,
+              message: `Parsed ${taskCount} task${taskCount === 1 ? "" : "s"} from plan.`,
+            });
           }
 
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "done",
+            projectName,
+            projectDir: result.projectDir,
+            taskCount,
+            message: "Project ready.",
+          });
           this.events.broadcast({
             type: "project:created",
             projectDir: result.projectDir,
@@ -968,8 +1075,10 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           console.log(`[runner] created project: ${result.projectDir} (${taskCount} tasks)`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this.events.broadcast({ type: "project:create_error", error: msg });
+          this.events.broadcast({ type: "project:create_error", kind: "unknown", error: msg });
           console.error("[runner] project:create failed:", err);
+        } finally {
+          this.creatingProject = null;
         }
         break;
       }

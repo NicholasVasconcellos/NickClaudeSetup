@@ -18,7 +18,7 @@ import type { ChatMessage } from "@/components/PlanningChat";
 import ProjectSetup from "@/components/ProjectSetup";
 
 export default function DashboardPage() {
-  const { connected, tasks, logs, layers, costs, summary, fileTree, planStatus, promptResponses, pendingReviews, suggestions, projectInfo, projectList, projectError, sendCommand } =
+  const { connected, tasks, logs, layers, costs, summary, fileTree, planStatus, promptResponses, pendingReviews, suggestions, projectInfo, projectList, projectError, projectCreateState, sendCommand } =
     useWebSocket("ws://localhost:3100");
 
   const [selectedTaskId, setSelectedTaskId] = useState<number | undefined>();
@@ -202,6 +202,7 @@ export default function DashboardPage() {
         onCreateProject={handleCreateProject}
         onListProjects={handleListProjects}
         createError={projectError}
+        createState={projectCreateState}
       />
     );
   }

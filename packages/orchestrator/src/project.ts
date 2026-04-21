@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -57,7 +58,10 @@ export function scaffoldProject(options: ScaffoldOptions): ProjectScaffoldResult
     throw new Error(`Invalid project name "${projectName}". Use alphanumeric, hyphens, dots, underscores.`);
   }
 
-  const projectDir = path.resolve(baseDir, projectName);
+  const expandedBase = baseDir.startsWith("~")
+    ? path.join(os.homedir(), baseDir.slice(1))
+    : baseDir;
+  const projectDir = path.resolve(expandedBase);
 
   // Check for collisions
   if (fs.existsSync(projectDir)) {

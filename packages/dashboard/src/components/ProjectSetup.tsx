@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import type { ProjectCreateState, ProjectCreateStage } from "@/hooks/useWebSocket";
 
 interface ProjectInfo {
   name: string;
@@ -14,7 +15,17 @@ interface ProjectSetupProps {
   onCreateProject: (projectName: string, baseDir: string, planMarkdown?: string, planPath?: string) => void;
   onListProjects: (baseDir: string) => void;
   createError: string | null;
+  createState: ProjectCreateState;
 }
+
+const STAGE_ORDER: ProjectCreateStage[] = ["scaffolding", "scaffolded", "parsing_plan", "plan_parsed", "done"];
+const STAGE_LABEL: Record<ProjectCreateStage, string> = {
+  scaffolding: "Scaffolding",
+  scaffolded: "Scaffolded",
+  parsing_plan: "Parsing plan (ultrathink)",
+  plan_parsed: "Plan parsed",
+  done: "Done",
+};
 
 type Tab = "create" | "open";
 
@@ -48,6 +59,7 @@ export default function ProjectSetup({
   onCreateProject,
   onListProjects,
   createError,
+  createState,
 }: ProjectSetupProps) {
   const [tab, setTab] = useState<Tab>("create");
   const [projectName, setProjectName] = useState("");
@@ -159,7 +171,19 @@ export default function ProjectSetup({
     }
   };
 
-  const canCreate = projectName.trim() && baseDir.trim() && !validateName(projectName);
+  const creating = createState.active;
+  const canCreate = !creating && projectName.trim() && baseDir.trim() && !validateName(projectName);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll log to bottom when new lines arrive
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [createState.logs.length]);
+
+  const stageIndex = createState.stage ? STAGE_ORDER.indexOf(createState.stage) : -1;
+  const showCreatePanel = creating || createState.logs.length > 0 || createState.error || createState.stage === "done";
 
   return (
     <div
@@ -287,9 +311,9 @@ export default function ProjectSetup({
                   )}
                 </div>
 
-                {/* Base Directory */}
+                {/* Project Directory */}
                 <div>
-                  <label style={labelStyle}>Base Directory</label>
+                  <label style={labelStyle}>Project Directory</label>
                   <input
                     type="text"
                     value={baseDir}
@@ -297,8 +321,11 @@ export default function ProjectSetup({
                     onFocus={() => setFocusedField("baseDir")}
                     onBlur={() => setFocusedField(null)}
                     style={inputStyle(focusedField === "baseDir")}
-                    placeholder="~/Developer"
+                    placeholder="~/Developer/my-project"
                   />
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                    Scaffold is written directly here — no extra subfolder is created.
+                  </div>
                 </div>
 
                 {/* Plan section */}
@@ -451,8 +478,127 @@ export default function ProjectSetup({
                   )}
                 </div>
 
-                {/* Error display */}
-                {createError && (
+                {/* Progress panel (create in flight / completed / errored) */}
+                {showCreatePanel && (
+                  <div
+                    style={{
+                      backgroundColor: "var(--bg-primary)",
+                      border: `1px solid ${createState.error ? "var(--error)" : "var(--border)"}`,
+                      borderRadius: 6,
+                      padding: 12,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    {/* Stage header */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {creating && (
+                        <span
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: "50%",
+                            border: "2px solid var(--accent)",
+                            borderTopColor: "transparent",
+                            animation: "spin 0.8s linear infinite",
+                            display: "inline-block",
+                          }}
+                        />
+                      )}
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                        {createState.projectName
+                          ? `${createState.error ? "Failed creating" : creating ? "Creating" : "Created"} ${createState.projectName}`
+                          : "Project creation"}
+                      </span>
+                    </div>
+
+                    {/* Stage steps */}
+                    <div style={{ display: "flex", gap: 4, fontSize: 11, flexWrap: "wrap" }}>
+                      {STAGE_ORDER.slice(0, 4).map((s, idx) => {
+                        const reached = stageIndex >= idx;
+                        const isCurrent = stageIndex === idx && creating;
+                        return (
+                          <span
+                            key={s}
+                            style={{
+                              padding: "3px 8px",
+                              borderRadius: 10,
+                              border: `1px solid ${reached ? "var(--accent)" : "var(--border)"}`,
+                              color: reached ? "var(--accent)" : "var(--text-muted)",
+                              backgroundColor: isCurrent ? "rgba(59,130,246,0.1)" : "transparent",
+                              fontWeight: isCurrent ? 600 : 400,
+                            }}
+                          >
+                            {STAGE_LABEL[s]}
+                          </span>
+                        );
+                      })}
+                    </div>
+
+                    {/* Current stage message */}
+                    {createState.message && (
+                      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                        {createState.message}
+                      </div>
+                    )}
+
+                    {/* Live logs */}
+                    {createState.logs.length > 0 && (
+                      <div
+                        ref={logRef}
+                        style={{
+                          backgroundColor: "#0a0a0a",
+                          border: "1px solid var(--border)",
+                          borderRadius: 4,
+                          padding: 10,
+                          fontFamily: "'SF Mono', 'Fira Code', monospace",
+                          fontSize: 11,
+                          lineHeight: 1.5,
+                          color: "var(--text-secondary)",
+                          maxHeight: 220,
+                          overflowY: "auto",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {createState.logs.map((line, i) => (
+                          <div key={i}>{line}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Error detail */}
+                    {createState.error && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--error)",
+                          backgroundColor: "rgba(239,68,68,0.08)",
+                          border: "1px solid var(--error)",
+                          borderRadius: 4,
+                          padding: "8px 10px",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {createState.error.kind === "collision" && createState.error.projectDir && (
+                          <div style={{ marginBottom: 6, fontWeight: 600 }}>
+                            A project already exists at that path.
+                          </div>
+                        )}
+                        {createState.error.kind === "concurrent" && (
+                          <div style={{ marginBottom: 6, fontWeight: 600 }}>
+                            Another create is already running.
+                          </div>
+                        )}
+                        {createState.error.message}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Fallback error display (no in-flight state) */}
+                {createError && !showCreatePanel && (
                   <div
                     style={{
                       backgroundColor: "rgba(239,68,68,0.1)",
@@ -491,8 +637,15 @@ export default function ProjectSetup({
                     width: "100%",
                   }}
                 >
-                  Create Project
+                  {creating
+                    ? createState.stage === "parsing_plan"
+                      ? "Parsing plan (this can take minutes)..."
+                      : createState.stage === "scaffolding"
+                        ? "Scaffolding..."
+                        : "Creating..."
+                    : "Create Project"}
                 </button>
+                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
               </>
             ) : (
               /* Open Existing tab */
