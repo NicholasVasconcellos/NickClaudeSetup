@@ -1,6 +1,6 @@
 ## Summarization
 
-Explain in consise and plain terms. Be extremely consise only list relevant information. Sacrifice grammer for the sake of concision.
+Explain in consise and plain terms. Be extremely consise only list relevant information. Sacrifice grammar for the sake of concision.
 
 ### Subagents for Independent Edits
 
