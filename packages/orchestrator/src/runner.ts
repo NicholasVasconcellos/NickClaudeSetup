@@ -758,8 +758,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
       db: this.db,
       planContent,
       projectDir: this.config.projectDir,
-      model: this.config.models.execute, // use execute model for plan parsing
-      effort: "max", // ultrathink — most important step
+      model: this.config.models.planning, // opus + max thinking for plan parsing
+      effort: this.config.planningEffort, // ultrathink — most important step
       timeout: this.config.taskTimeout,
       onOutput: (line) => {
         this.events.taskLogAppend(-1, line); // -1 = plan parsing pseudo-task
@@ -1011,8 +1011,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
               db: this.db,
               planContent: effectivePlan,
               projectDir: result.projectDir,
-              model: this.config.models.execute,
-              effort: "max",
+              model: this.config.models.planning,
+              effort: this.config.planningEffort,
               timeout: this.config.taskTimeout,
               onOutput: (line) => {
                 this.events.broadcast({

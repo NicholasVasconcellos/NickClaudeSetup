@@ -200,6 +200,7 @@ export interface OrchestratorConfig {
   mainBranch: string;
   models: {
     spec: string;
+    planning: string;
     execute: string;
     review: string;
     document: string;
@@ -207,6 +208,7 @@ export interface OrchestratorConfig {
     learning: string;
   };
   phaseEffortDefaults: Record<TaskPhase, TaskEffort>;
+  planningEffort: TaskEffort;
 }
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
@@ -222,6 +224,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   mainBranch: "main",
   models: {
     spec: "claude-sonnet-4-6",
+    planning: "claude-opus-4-7",
     execute: "claude-sonnet-4-6",
     review: "claude-sonnet-4-6",
     document: "claude-sonnet-4-6",
@@ -235,6 +238,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     document: "medium",
     merge: "high",
   },
+  planningEffort: "max",
 };
 
 // ── Run Summary ──────────────────────────────────────────────

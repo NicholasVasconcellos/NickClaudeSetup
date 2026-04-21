@@ -25,9 +25,10 @@ interface CostData {
 // and also the final result object from `--output-format json`.
 interface ClaudeJsonMessage {
   type?: string;
-  // Top-level result envelope (--output-format json)
+  // Top-level result envelope (--output-format json / stream-json terminal event)
   result?: string;
   cost_usd?: number;
+  total_cost_usd?: number;
   // Usage block sometimes nested under a "usage" key
   usage?: {
     input_tokens?: number;
@@ -84,8 +85,8 @@ export class ClaudeRunner {
       try {
         const parsed = JSON.parse(candidate) as ClaudeJsonMessage;
 
-        // Cost: prefer costUSD, then cost_usd
-        const parsedCost = parsed.costUSD ?? parsed.cost_usd;
+        // Cost: prefer costUSD, then cost_usd, then total_cost_usd (stream-json terminal)
+        const parsedCost = parsed.costUSD ?? parsed.cost_usd ?? parsed.total_cost_usd;
         if (typeof parsedCost === "number" && parsedCost > 0) {
           cost = parsedCost;
         }
@@ -121,7 +122,7 @@ export class ClaudeRunner {
 
     // Last-resort regex sweeps for resilience against unexpected output shapes
     if (cost === 0) {
-      const costMatch = output.match(/"cost(?:USD|_usd)"\s*:\s*([\d.]+)/);
+      const costMatch = output.match(/"(?:total_cost_usd|cost_usd|costUSD)"\s*:\s*([\d.]+)/);
       if (costMatch) cost = parseFloat(costMatch[1]);
     }
     if (tokensIn === 0) {
@@ -170,8 +171,9 @@ export class ClaudeRunner {
         "--model",
         resolvedModel,
         ...(effort ? ["--effort", effort] : []),
+        "--dangerously-skip-permissions",
         "--output-format",
-        "json",
+        "stream-json",
         "--verbose",
       ];
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { parseStreamLine, resetStreamSeq, type StreamEvent } from "@/lib/streamParser";
 
 // --- WS Event Types (decoupled from orchestrator package) ---
 
@@ -27,11 +28,13 @@ export interface ProjectCreateState {
   stage: ProjectCreateStage | null;
   message: string | null;
   logs: string[];
+  events: StreamEvent[];
   taskCount: number;
   error: { message: string; kind?: ProjectCreateErrorKind; projectDir?: string } | null;
 }
 
-const MAX_CREATE_LOG_LINES = 500;
+const MAX_CREATE_LOG_LINES = 2000;
+const MAX_CREATE_EVENTS = 5000;
 
 type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: string; newState: TaskState; title?: string }
@@ -175,6 +178,7 @@ const initialCreateState: ProjectCreateState = {
   stage: null,
   message: null,
   logs: [],
+  events: [],
   taskCount: 0,
   error: null,
 };
@@ -465,17 +469,21 @@ export function useWebSocket(url: string): WebSocketState {
       }
 
       case "project:create_progress": {
-        setProjectCreateState((prev) => ({
-          ...prev,
-          active: data.stage !== "done",
-          projectName: data.projectName,
-          stage: data.stage,
-          message: data.message ?? prev.message,
-          taskCount: data.taskCount ?? prev.taskCount,
-          // Reset logs + error when a new create starts
-          logs: prev.projectName !== data.projectName && data.stage === "scaffolding" ? [] : prev.logs,
-          error: prev.projectName !== data.projectName && data.stage === "scaffolding" ? null : prev.error,
-        }));
+        setProjectCreateState((prev) => {
+          const isNewSession = prev.projectName !== data.projectName && data.stage === "scaffolding";
+          if (isNewSession) resetStreamSeq();
+          return {
+            ...prev,
+            active: data.stage !== "done",
+            projectName: data.projectName,
+            stage: data.stage,
+            message: data.message ?? prev.message,
+            taskCount: data.taskCount ?? prev.taskCount,
+            logs: isNewSession ? [] : prev.logs,
+            events: isNewSession ? [] : prev.events,
+            error: isNewSession ? null : prev.error,
+          };
+        });
         break;
       }
 
@@ -485,7 +493,12 @@ export function useWebSocket(url: string): WebSocketState {
           if (nextLogs.length > MAX_CREATE_LOG_LINES) {
             nextLogs.splice(0, nextLogs.length - MAX_CREATE_LOG_LINES);
           }
-          return { ...prev, logs: nextLogs };
+          const parsed = parseStreamLine(data.line);
+          const nextEvents = parsed.length > 0 ? [...prev.events, ...parsed] : prev.events;
+          if (nextEvents.length > MAX_CREATE_EVENTS) {
+            nextEvents.splice(0, nextEvents.length - MAX_CREATE_EVENTS);
+          }
+          return { ...prev, logs: nextLogs, events: nextEvents };
         });
         break;
       }
@@ -553,12 +566,14 @@ export function useWebSocket(url: string): WebSocketState {
 
   const sendCommand = useCallback((event: WSEventFromClient) => {
     if (event.type === "project:create") {
+      resetStreamSeq();
       setProjectCreateState({
         active: true,
         projectName: event.projectName,
         stage: null,
         message: "Sending request...",
         logs: [],
+        events: [],
         taskCount: 0,
         error: null,
       });

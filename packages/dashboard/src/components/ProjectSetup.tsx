@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { ProjectCreateState, ProjectCreateStage } from "@/hooks/useWebSocket";
+import CreateLogPanel from "./CreateLogPanel";
 
 interface ProjectInfo {
   name: string;
@@ -173,17 +174,15 @@ export default function ProjectSetup({
 
   const creating = createState.active;
   const canCreate = !creating && projectName.trim() && baseDir.trim() && !validateName(projectName);
-  const logRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll log to bottom when new lines arrive
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [createState.logs.length]);
+  const [logExpanded, setLogExpanded] = useState(false);
 
   const stageIndex = createState.stage ? STAGE_ORDER.indexOf(createState.stage) : -1;
-  const showCreatePanel = creating || createState.logs.length > 0 || createState.error || createState.stage === "done";
+  const showCreatePanel =
+    creating ||
+    createState.logs.length > 0 ||
+    createState.events.length > 0 ||
+    createState.error ||
+    createState.stage === "done";
 
   return (
     <div
@@ -543,30 +542,14 @@ export default function ProjectSetup({
                       </div>
                     )}
 
-                    {/* Live logs */}
-                    {createState.logs.length > 0 && (
-                      <div
-                        ref={logRef}
-                        style={{
-                          backgroundColor: "#0a0a0a",
-                          border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          padding: 10,
-                          fontFamily: "'SF Mono', 'Fira Code', monospace",
-                          fontSize: 11,
-                          lineHeight: 1.5,
-                          color: "var(--text-secondary)",
-                          maxHeight: 220,
-                          overflowY: "auto",
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {createState.logs.map((line, i) => (
-                          <div key={i}>{line}</div>
-                        ))}
-                      </div>
-                    )}
+                    {/* Live agent events (parsed stream-json) */}
+                    <CreateLogPanel
+                      events={createState.events}
+                      rawLogs={createState.logs}
+                      expanded={logExpanded}
+                      onToggleExpand={() => setLogExpanded((v) => !v)}
+                    />
+
 
                     {/* Error detail */}
                     {createState.error && (
