@@ -1,4 +1,6 @@
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 
 import { Database } from "./db.js";
 import { GitManager } from "./git.js";
@@ -74,9 +76,13 @@ export class Runner {
     this.db.init();
 
     // Crash recovery: clean up any orphaned worktrees from a previous run
-    const orphanCount = await this.git.cleanupOrphanedWorktrees();
-    if (orphanCount > 0) {
-      console.log(`[runner] cleaned up ${orphanCount} orphaned worktree(s)`);
+    try {
+      const orphanCount = await this.git.cleanupOrphanedWorktrees();
+      if (orphanCount > 0) {
+        console.log(`[runner] cleaned up ${orphanCount} orphaned worktree(s)`);
+      }
+    } catch (err) {
+      console.debug(`[runner] skipped worktree cleanup (not a git repo):`, err instanceof Error ? err.message : err);
     }
 
     // Start the WebSocket server
@@ -907,13 +913,32 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
       }
 
       case "project:create": {
-        const { projectName, baseDir, planMarkdown } = event as {
+        const { projectName, baseDir, planMarkdown, planPath } = event as {
           type: "project:create";
           projectName: string;
           baseDir: string;
           planMarkdown?: string;
+          planPath?: string;
         };
         try {
+          // planPath takes precedence over pasted markdown
+          let effectivePlan: string | undefined = planMarkdown;
+          if (planPath && planPath.trim()) {
+            const resolvedPath = planPath.startsWith("~")
+              ? path.join(os.homedir(), planPath.slice(1))
+              : path.resolve(planPath);
+            try {
+              effectivePlan = fs.readFileSync(resolvedPath, "utf-8");
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.events.broadcast({
+                type: "project:create_error",
+                error: `Could not read plan file at ${resolvedPath}: ${msg}`,
+              });
+              return;
+            }
+          }
+
           const result = scaffoldProject({ projectName, baseDir });
 
           // Re-point Runner to new project
@@ -925,8 +950,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           this.git = new GitManager(this.config);
 
           let taskCount = 0;
-          if (planMarkdown) {
-            taskCount = await this.loadPlanWithAgent(planMarkdown);
+          if (effectivePlan) {
+            taskCount = await this.loadPlanWithAgent(effectivePlan);
           }
 
           this.events.broadcast({

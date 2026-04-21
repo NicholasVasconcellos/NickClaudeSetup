@@ -180,7 +180,7 @@ export type WSEventFromClient =
   | { type: "skills:save_variation"; skillName: string; variationName: string; content: string }
   | { type: "skills:activate"; skillName: string; variationName: string }
   | { type: "files:tree" }
-  | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string }
+  | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string; planPath?: string }
   | { type: "project:list"; baseDir: string };
 
 // ── Configuration ────────────────────────────────────────────

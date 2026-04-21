@@ -216,6 +216,45 @@ async function cmdExecute(args: ParsedArgs): Promise<void> {
   }
 }
 
+// ── Subcommand: serve ────────────────────────────────────────
+
+async function cmdServe(args: ParsedArgs): Promise<void> {
+  const scratchDir = path.join(os.homedir(), ".orchestrator-scratch");
+  const scratchOrchDir = path.join(scratchDir, ".orchestrator");
+  if (!fs.existsSync(scratchOrchDir)) {
+    fs.mkdirSync(scratchOrchDir, { recursive: true });
+  }
+
+  const config: OrchestratorConfig = {
+    ...DEFAULT_CONFIG,
+    ...args,
+    projectDir: scratchDir,
+    dbPath: path.join(scratchOrchDir, "orchestrator.db"),
+  };
+
+  printBanner(config);
+
+  const runner = new Runner(config);
+
+  const shutdown = async (signal: string) => {
+    console.log(chalk.yellow(`\nReceived ${signal}, shutting down…`));
+    await runner.shutdown();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  try {
+    await runner.init();
+    console.log(chalk.green(`\nServer ready at ws://localhost:${config.wsPort} — open the dashboard to create or open a project.`));
+    await new Promise<void>(() => {});
+  } catch (err) {
+    console.error(chalk.red("Serve error:"), err);
+    process.exit(1);
+  }
+}
+
 // ── Subcommand: status ────────────────────────────────────────
 
 function cmdStatus(args: ParsedArgs): void {
@@ -292,6 +331,10 @@ if (isMain) {
   switch (cliArgs.subcommand) {
     case "execute":
       cmdExecute(cliArgs);
+      break;
+
+    case "serve":
+      cmdServe(cliArgs);
       break;
 
     case "status":

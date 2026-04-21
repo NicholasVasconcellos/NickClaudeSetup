@@ -11,7 +11,7 @@ interface ProjectInfo {
 interface ProjectSetupProps {
   connected: boolean;
   projectList: ProjectInfo[];
-  onCreateProject: (projectName: string, baseDir: string, planMarkdown?: string) => void;
+  onCreateProject: (projectName: string, baseDir: string, planMarkdown?: string, planPath?: string) => void;
   onListProjects: (baseDir: string) => void;
   createError: string | null;
 }
@@ -53,6 +53,7 @@ export default function ProjectSetup({
   const [projectName, setProjectName] = useState("");
   const [baseDir, setBaseDir] = useState("~/Developer");
   const [planContent, setPlanContent] = useState("");
+  const [planPath, setPlanPath] = useState("");
   const [skipPlan, setSkipPlan] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
@@ -126,9 +127,18 @@ export default function ProjectSetup({
       setNameError(err);
       return;
     }
-    const plan = skipPlan ? undefined : planContent.trim() || undefined;
-    onCreateProject(projectName.trim(), baseDir.trim(), plan);
-  }, [projectName, baseDir, planContent, skipPlan, validateName, onCreateProject]);
+    if (skipPlan) {
+      onCreateProject(projectName.trim(), baseDir.trim(), undefined, undefined);
+      return;
+    }
+    const trimmedPath = planPath.trim();
+    if (trimmedPath) {
+      onCreateProject(projectName.trim(), baseDir.trim(), undefined, trimmedPath);
+      return;
+    }
+    const plan = planContent.trim() || undefined;
+    onCreateProject(projectName.trim(), baseDir.trim(), plan, undefined);
+  }, [projectName, baseDir, planContent, planPath, skipPlan, validateName, onCreateProject]);
 
   // --- Relative date formatting ---
   const formatDate = (iso: string) => {
@@ -419,6 +429,23 @@ export default function ProjectSetup({
                         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                           {planContent.length.toLocaleString()} chars
                         </span>
+                      </div>
+
+                      {/* Plan File Path input */}
+                      <div style={{ marginTop: 12 }}>
+                        <label style={labelStyle}>Plan File Path (optional)</label>
+                        <input
+                          type="text"
+                          value={planPath}
+                          onChange={(e) => setPlanPath(e.target.value)}
+                          onFocus={() => setFocusedField("planPath")}
+                          onBlur={() => setFocusedField(null)}
+                          style={inputStyle(focusedField === "planPath")}
+                          placeholder="~/Desktop/plan.md"
+                        />
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                          If set, this path is used instead of the pasted text.
+                        </div>
                       </div>
                     </>
                   )}

@@ -35,8 +35,8 @@ export default function DashboardPage() {
     setShowAddTask(false);
   };
 
-  const handleCreateProject = (projectName: string, baseDir: string, planMarkdown?: string) => {
-    sendCommand({ type: "project:create", projectName, baseDir, planMarkdown });
+  const handleCreateProject = (projectName: string, baseDir: string, planMarkdown?: string, planPath?: string) => {
+    sendCommand({ type: "project:create", projectName, baseDir, planMarkdown, planPath });
   };
 
   const handleListProjects = (baseDir: string) => {

@@ -81,7 +81,7 @@ type WSEventFromClient =
   | { type: "task:create"; title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }
   | { type: "plan:load"; markdown: string }
   | { type: "run:start"; mode: "automated" | "human_review" }
-  | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string }
+  | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string; planPath?: string }
   | { type: "project:list"; baseDir: string };
 
 export interface PhaseContextInfo {
