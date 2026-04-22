@@ -305,7 +305,10 @@ export interface ProjectInfo {
 }
 
 export function listProjects(baseDir: string): ProjectInfo[] {
-  const resolved = path.resolve(baseDir);
+  const expanded = baseDir.startsWith("~")
+    ? path.join(os.homedir(), baseDir.slice(1))
+    : baseDir;
+  const resolved = path.resolve(expanded);
   if (!fs.existsSync(resolved)) return [];
 
   const entries = fs.readdirSync(resolved, { withFileTypes: true });
