@@ -2,7 +2,13 @@
 
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "claude-sonnet-4-6": 200_000,
+  "claude-sonnet-4-6[1m]": 1_000_000,
+  "claude-sonnet-4-7": 200_000,
+  "claude-sonnet-4-7[1m]": 1_000_000,
   "claude-opus-4-6": 200_000,
+  "claude-opus-4-6[1m]": 1_000_000,
+  "claude-opus-4-7": 200_000,
+  "claude-opus-4-7[1m]": 1_000_000,
   "claude-haiku-4-5-20251001": 200_000,
 };
 
