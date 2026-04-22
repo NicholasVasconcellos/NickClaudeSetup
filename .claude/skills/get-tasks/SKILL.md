@@ -78,7 +78,7 @@ Schema:
       "title": "string",
       "description": "string — what to build, how it fits into the project, and what the expected outcome looks like",
       "contextFiles": ["path/to/file1", "path/to/file2"],
-      "dependsOn": ["task title", "..."]
+      "dependsOn": ["task1", "task2"]
     }
   ]
 }
