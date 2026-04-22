@@ -6,8 +6,22 @@ import { fileURLToPath } from "node:url";
 
 import { Database } from "./db.js";
 import { validateDAG } from "./dag.js";
-import type { AgentTaskDef, Task, TaskEffort } from "./types.js";
+import type { AgentTaskDef, ParsePlanMeta, ParsePlanStatus, Task, TaskEffort } from "./types.js";
 import { ClaudeRunner } from "./claude.js";
+
+// ── Parse-plan persistence paths ─────────────────────────────
+
+const PARSE_PLAN_LOG_RELATIVE = path.join(".orchestrator", "parse-plan.log");
+const PARSE_PLAN_META_RELATIVE = path.join(".orchestrator", "parse-plan-meta.json");
+export const TASKS_FILE_RELATIVE = path.join("tasks", "tasks.json");
+
+export function parsePlanLogPath(projectDir: string): string {
+  return path.join(projectDir, PARSE_PLAN_LOG_RELATIVE);
+}
+
+export function parsePlanMetaPath(projectDir: string): string {
+  return path.join(projectDir, PARSE_PLAN_META_RELATIVE);
+}
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -42,6 +56,8 @@ export interface ParsePlanResult {
   /** Usage metrics from agent-based parsing; omitted by the deterministic parsePlanToTasks path. */
   usage?: ParsePlanUsage;
   model?: string;
+  /** True if the agent subprocess was killed by the timeout (parse-plan specific). */
+  timedOut?: boolean;
 }
 
 // ── Template Resolution ──────────────────────────────────────
@@ -62,8 +78,7 @@ function getSkillsDir(): string {
 
 /**
  * Reads the project-local SKILL.md body for a given skill, stripping YAML
- * frontmatter. Claude Code headless mode (`-p`) does not load project-level
- * skills or parse slash commands, so the body must be inlined into the prompt.
+ * frontmatter. Claude Code CLI mode (`-p`) doesn't work with slash cmd
  * Returns empty string if the skill file is missing.
  */
 export function loadSkillBody(projectDir: string, skillName: string): string {
@@ -302,6 +317,9 @@ export interface ProjectInfo {
   path: string;
   taskCount: number;
   lastModified: string;
+  parseStatus: ParsePlanStatus;
+  hasTasksJson: boolean;
+  canResumeParse: boolean;
 }
 
 export function listProjects(baseDir: string): ProjectInfo[] {
@@ -324,11 +342,18 @@ export function listProjects(baseDir: string): ProjectInfo[] {
       db.init();
       const tasks = db.getAllTasks();
       const stat = fs.statSync(dbPath);
+      const projectPath = path.join(resolved, entry.name);
+      const meta = readParsePlanMeta(projectPath);
       projects.push({
         name: entry.name,
-        path: path.join(resolved, entry.name),
+        path: projectPath,
         taskCount: tasks.length,
         lastModified: stat.mtime.toISOString(),
+        parseStatus: metaToStatus(meta),
+        hasTasksJson: fs.existsSync(path.join(projectPath, TASKS_FILE_RELATIVE)),
+        canResumeParse:
+          !!meta?.sessionId &&
+          (meta.errorKind === "plan_parse" || meta.errorKind === "plan_parse_timeout"),
       });
       db.close();
     } catch {
@@ -346,6 +371,7 @@ export interface AgentParsePlanOptions {
   db: Database;
   planContent: string;
   projectDir: string;
+  projectName?: string;
   model?: string;
   effort?: TaskEffort;
   timeout?: number;
@@ -353,6 +379,7 @@ export interface AgentParsePlanOptions {
   /** Fires whenever a stream-json line carries cumulative usage/cost info. */
   onUsage?: (usage: ParsePlanUsage) => void;
   signal?: AbortSignal;
+  resumeSessionId?: string;
 }
 
 // Running totals extracted from a single stream-json line.
@@ -361,6 +388,20 @@ interface StreamUsageTick {
   tokensOut?: number;
   cost?: number;
   isSubagentStart?: boolean;
+}
+
+function parseSessionIdFromLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const msg = JSON.parse(trimmed);
+    if (msg?.type === "system" && msg.subtype === "init" && typeof msg.session_id === "string") {
+      return msg.session_id;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function parseUsageFromLine(line: string): StreamUsageTick | null {
@@ -424,25 +465,47 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     db,
     planContent,
     projectDir,
+    projectName = path.basename(projectDir),
     model = "claude-opus-4-6",
     effort = "max",
     timeout = 10 * 60 * 1000,
     onOutput,
     onUsage,
     signal,
+    resumeSessionId,
   } = options;
 
-  // inlining skill into body (slash doesn't work in invocation)
-  const skillBody = loadSkillBody(projectDir, "get-tasks");
-  if (!skillBody) {
-    throw new Error(
-      `get-tasks skill not found at ${projectDir}/.claude/skills/get-tasks/SKILL.md — ` +
-      `scaffold did not copy skills correctly.`,
-    );
+  let prompt: string;
+  if (resumeSessionId) {
+    prompt =
+      "Continue the prior /get-tasks run. The plan and skill instructions are " +
+      "already in context. If tasks/tasks.json is already written, confirm and " +
+      "stop. Otherwise finish producing it.";
+  } else {
+    const skillBody = loadSkillBody(projectDir, "get-tasks");
+    if (!skillBody) {
+      throw new Error(
+        `get-tasks skill not found at ${projectDir}/.claude/skills/get-tasks/SKILL.md — ` +
+        `scaffold did not copy skills correctly.`,
+      );
+    }
+    prompt = `${skillBody}\n\n---\n\n## Plan\n\n${planContent}`;
   }
-  const prompt = `${skillBody}\n\n---\n\n## Plan\n\n${planContent}`;
 
   const running: ParsePlanUsage = { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
+  let sessionId: string | null = resumeSessionId ?? null;
+
+  // Persist the raw stream-json output so the dashboard can replay the run
+  // after a disconnect/reload/server-restart. Truncates any prior log so retry
+  // overwrites rather than appends.
+  const logPath = parsePlanLogPath(projectDir);
+  const metaPath = parsePlanMetaPath(projectDir);
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const logStream = fs.createWriteStream(logPath, { flags: "w" });
+  const startedAt = new Date().toISOString();
+  logStream.write(
+    JSON.stringify({ type: "header", startedAt, model, effort, timeout, projectName }) + "\n",
+  );
 
   const result = await claude.runTask({
     prompt,
@@ -451,8 +514,14 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     effort,
     timeout,
     signal,
+    resumeSessionId,
     onOutput: (line) => {
+      logStream.write(line + "\n");
       onOutput?.(line);
+      if (!sessionId) {
+        const sid = parseSessionIdFromLine(line);
+        if (sid) sessionId = sid;
+      }
       if (!onUsage) return;
       const tick = parseUsageFromLine(line);
       if (!tick) return;
@@ -467,6 +536,8 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     },
   });
 
+  await new Promise<void>((resolve) => logStream.end(resolve));
+
   // Peak per-turn pressure for both in and out (matches task-dashboard semantics).
   // result.{tokensIn,tokensOut} are last-turn values from parseCostFromOutput.
   const finalUsage: ParsePlanUsage = {
@@ -476,13 +547,42 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     subagentCount: running.subagentCount,
   };
 
+  const writeMeta = (overrides: { taskCount?: number; errorKind?: ParsePlanMeta["errorKind"] } = {}) => {
+    const stderrTail = result.stderr.length > 4096 ? result.stderr.slice(-4096) : result.stderr;
+    const meta: ParsePlanMeta = {
+      projectName,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      errorKind: overrides.errorKind ?? null,
+      stderrTail,
+      model,
+      effort,
+      taskCount: overrides.taskCount ?? 0,
+      sessionId,
+      usage: { ...finalUsage },
+    };
+    try {
+      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    } catch {
+      // Disk write is best-effort; don't fail the whole parse if it breaks.
+    }
+  };
+
   if (result.exitCode !== 0) {
+    const kind: ParsePlanMeta["errorKind"] = result.timedOut ? "plan_parse_timeout" : "plan_parse";
+    const msg = result.timedOut
+      ? `Agent timed out after ${Math.round(result.duration / 60000)} min (common causes: system sleep, network hang).`
+      : `Agent failed (exit ${result.exitCode}): ${result.stderr}`;
+    writeMeta({ errorKind: kind });
     return {
       taskCount: 0,
       tasks: [],
-      errors: [`Agent failed (exit ${result.exitCode}): ${result.stderr}`],
+      errors: [msg],
       usage: finalUsage,
       model,
+      timedOut: result.timedOut,
     };
   }
 
@@ -493,6 +593,7 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     taskDefs = await loadTaskDefs(projectDir);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    writeMeta({ errorKind: "plan_parse" });
     return {
       taskCount: 0,
       tasks: [],
@@ -502,17 +603,29 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     };
   }
 
-  // Two-pass creation: first create all tasks, then resolve title-based deps
-  const createdTasks: Task[] = [];
+  const { created: createdTasks, errors } = insertTaskDefs(db, taskDefs);
+
+  writeMeta({
+    taskCount: createdTasks.length,
+    errorKind: errors.length > 0 ? "plan_parse" : null,
+  });
+
+  return { taskCount: createdTasks.length, tasks: createdTasks, errors, usage: finalUsage, model };
+}
+
+export function insertTaskDefs(
+  db: Database,
+  taskDefs: AgentTaskDef[],
+): { created: Task[]; errors: string[] } {
+  const created: Task[] = [];
   const titleToId = new Map<string, number>();
 
   for (const def of taskDefs) {
     const task = db.createTask(def.title, def.description, [], undefined, undefined, def.contextFiles);
-    createdTasks.push(task);
+    created.push(task);
     titleToId.set(def.title, task.id);
   }
 
-  // Resolve title-based dependencies to real DB IDs
   const errors: string[] = [];
   for (let i = 0; i < taskDefs.length; i++) {
     const def = taskDefs[i];
@@ -527,26 +640,75 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
         }
       }
       if (realDeps.length > 0) {
-        db.updateTaskDependencies(createdTasks[i].id, realDeps);
-        createdTasks[i].dependsOn = realDeps;
+        db.updateTaskDependencies(created[i].id, realDeps);
+        created[i].dependsOn = realDeps;
       }
     }
   }
 
-  // Validate the DAG
-  const dagResult = validateDAG(createdTasks);
+  const dagResult = validateDAG(created);
   if (!dagResult.valid) {
     errors.push(...dagResult.errors.map((e) => `DAG error: ${e}`));
   }
 
-  return { taskCount: createdTasks.length, tasks: createdTasks, errors, usage: finalUsage, model };
+  return { created, errors };
+}
+
+// ── readParsePlanState ───────────────────────────────────────
+
+export interface ParsePlanState {
+  logExists: boolean;
+  meta: ParsePlanMeta | null;
+  logLines: string[];
+}
+
+/**
+ * Reads the persisted parse-plan log + meta for a project. Safe to call on
+ * projects that never ran a parse — returns empty state rather than throwing.
+ */
+export function readParsePlanState(projectDir: string): ParsePlanState {
+  const logPath = parsePlanLogPath(projectDir);
+  const meta = readParsePlanMeta(projectDir);
+
+  let logLines: string[] = [];
+  let logExists = false;
+  try {
+    const raw = fs.readFileSync(logPath, "utf-8");
+    logExists = true;
+    // Preserve line order; drop the trailing empty string from split.
+    logLines = raw.split("\n");
+    if (logLines.length > 0 && logLines[logLines.length - 1] === "") logLines.pop();
+  } catch {
+    // Missing or unreadable
+  }
+
+  return { logExists, meta, logLines };
+}
+
+/** Reads parse-plan-meta.json or returns null if missing/unreadable. */
+export function readParsePlanMeta(projectDir: string): ParsePlanMeta | null {
+  try {
+    const raw = fs.readFileSync(parsePlanMetaPath(projectDir), "utf-8");
+    return JSON.parse(raw) as ParsePlanMeta;
+  } catch {
+    return null;
+  }
+}
+
+/** Derives the badge status from a meta object (or lack thereof). */
+export function metaToStatus(meta: ParsePlanMeta | null): ParsePlanStatus {
+  if (!meta) return "unknown";
+  return meta.exitCode === 0 && meta.errorKind === null ? "ok" : "failed";
+}
+
+/** Best-effort status for the "Open Existing" project list. */
+export function readParsePlanStatus(projectDir: string): ParsePlanStatus {
+  return metaToStatus(readParsePlanMeta(projectDir));
 }
 
 // ── tasks.json loader ────────────────────────────────────────
 
-const TASKS_FILE_RELATIVE = path.join("tasks", "tasks.json");
-
-async function loadTaskDefs(projectDir: string): Promise<AgentTaskDef[]> {
+export async function loadTaskDefs(projectDir: string): Promise<AgentTaskDef[]> {
   const tasksPath = path.join(projectDir, TASKS_FILE_RELATIVE);
 
   let raw: string;

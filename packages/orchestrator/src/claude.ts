@@ -11,6 +11,7 @@ export interface RunTaskOptions {
   timeout?: number;
   onOutput?: (line: string) => void;
   signal?: AbortSignal;
+  resumeSessionId?: string;
 }
 
 // ── Cost parsing helpers ──────────────────────────────────────
@@ -147,6 +148,7 @@ export class ClaudeRunner {
       effort,
       onOutput,
       signal: externalSignal,
+      resumeSessionId,
     } = options;
 
     const timeout = options.timeout ?? this.config.taskTimeout;
@@ -163,9 +165,12 @@ export class ClaudeRunner {
 
     // Tracks whether we initiated the kill so we can set exitCode = -1
     let killedByUs = false;
+    // Set when the timeout handler fires — distinguishes timeout from external aborts.
+    let timedOut = false;
 
     return new Promise<ClaudeResult>((resolve) => {
       const args = [
+        ...(resumeSessionId ? ["--resume", resumeSessionId] : []),
         "-p",
         prompt,
         "--model",
@@ -194,6 +199,7 @@ export class ClaudeRunner {
           tokensIn: 0,
           tokensOut: 0,
           duration: Date.now() - startTime,
+          timedOut: false,
         });
         return;
       }
@@ -239,6 +245,7 @@ export class ClaudeRunner {
       // ── timeout ───────────────────────────────────────────────
       if (timeout > 0) {
         timeoutHandle = setTimeout(() => {
+          timedOut = true;
           timeoutController.abort();
           killProc();
         }, timeout);
@@ -287,6 +294,7 @@ export class ClaudeRunner {
           tokensIn,
           tokensOut,
           duration,
+          timedOut,
         });
       });
 
@@ -303,6 +311,7 @@ export class ClaudeRunner {
           tokensIn: 0,
           tokensOut: 0,
           duration: Date.now() - startTime,
+          timedOut: false,
         });
       });
     });

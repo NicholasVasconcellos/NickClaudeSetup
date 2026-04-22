@@ -20,7 +20,33 @@ type TaskState =
 type TaskPhase = "spec" | "execute" | "review" | "document";
 
 export type ProjectCreateStage = "scaffolding" | "scaffolded" | "parsing_plan" | "plan_parsed" | "done";
-export type ProjectCreateErrorKind = "collision" | "plan_read" | "plan_parse" | "scaffold" | "concurrent" | "unknown";
+export type ProjectCreateErrorKind = "collision" | "plan_read" | "plan_parse" | "plan_parse_timeout" | "scaffold" | "concurrent" | "unknown";
+export type ParsePlanStatus = "ok" | "failed" | "unknown";
+
+export interface ParsePlanMeta {
+  projectName: string;
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number;
+  timedOut: boolean;
+  errorKind: "plan_parse" | "plan_parse_timeout" | null;
+  stderrTail: string;
+  model: string;
+  effort: string;
+  taskCount: number;
+  sessionId: string | null;
+  usage: { tokensIn: number; tokensOut: number; cost: number; subagentCount: number };
+}
+
+export interface ProjectListEntry {
+  name: string;
+  path: string;
+  taskCount: number;
+  lastModified: string;
+  parseStatus: ParsePlanStatus;
+  hasTasksJson: boolean;
+  canResumeParse: boolean;
+}
 
 export interface PlanningAgentUsage {
   model: string | null;
@@ -38,6 +64,7 @@ export interface PlanningAgentUsage {
 export interface ProjectCreateState {
   active: boolean;
   projectName: string | null;
+  projectDir: string | null;
   stage: ProjectCreateStage | null;
   message: string | null;
   logs: string[];
@@ -45,6 +72,10 @@ export interface ProjectCreateState {
   taskCount: number;
   error: { message: string; kind?: ProjectCreateErrorKind; projectDir?: string } | null;
   planningUsage: PlanningAgentUsage;
+  /** True while showing a persisted log (not a live run). Cleared when a retry starts. */
+  historical: boolean;
+  /** Populated during historical replay. */
+  meta: ParsePlanMeta | null;
 }
 
 const MAX_CREATE_LOG_LINES = 2000;
@@ -76,8 +107,10 @@ type WSEventFromServer =
   | { type: "project:create_agent_started"; projectName: string; model: string; effort: string }
   | { type: "project:create_agent_usage"; projectName: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
   | { type: "project:create_agent_finished"; projectName: string; model: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
-  | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
+  | { type: "project:list_result"; projects: ProjectListEntry[] }
   | { type: "project:info"; name: string; dir: string }
+  | { type: "project:create_log_replay_start"; projectDir: string; projectName: string; meta: ParsePlanMeta | null }
+  | { type: "project:create_log_replay_end"; projectDir: string }
   | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };
 
 interface TreeNodeWS {
@@ -119,7 +152,11 @@ type WSEventFromClient =
   | { type: "plan:load"; markdown: string }
   | { type: "run:start"; mode: "automated" | "human_review" }
   | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string; planPath?: string }
-  | { type: "project:list"; baseDir: string };
+  | { type: "project:list"; baseDir: string }
+  | { type: "project:create_log_tail"; projectDir: string }
+  | { type: "project:retry_parse"; projectDir: string }
+  | { type: "project:resume_parse"; projectDir: string }
+  | { type: "project:load_tasks"; projectDir: string };
 
 export interface PhaseContextInfo {
   phase: string;
@@ -183,7 +220,7 @@ export interface WebSocketState {
   pendingReviews: Map<number, ReviewData>;
   suggestions: Suggestion[];
   projectInfo: { name: string; dir: string } | null;
-  projectList: Array<{ name: string; path: string; taskCount: number; lastModified: string }>;
+  projectList: ProjectListEntry[];
   projectError: string | null;
   projectCreateState: ProjectCreateState;
   sendCommand: (event: WSEventFromClient) => void;
@@ -204,6 +241,7 @@ const initialPlanningUsage: PlanningAgentUsage = {
 const initialCreateState: ProjectCreateState = {
   active: false,
   projectName: null,
+  projectDir: null,
   stage: null,
   message: null,
   logs: [],
@@ -211,6 +249,8 @@ const initialCreateState: ProjectCreateState = {
   taskCount: 0,
   error: null,
   planningUsage: initialPlanningUsage,
+  historical: false,
+  meta: null,
 };
 
 export function useWebSocket(url: string): WebSocketState {
@@ -239,7 +279,7 @@ export function useWebSocket(url: string): WebSocketState {
   const [pendingReviews, setPendingReviews] = useState<Map<number, ReviewData>>(new Map());
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [projectInfo, setProjectInfo] = useState<{ name: string; dir: string } | null>(null);
-  const [projectList, setProjectList] = useState<Array<{ name: string; path: string; taskCount: number; lastModified: string }>>([]);
+  const [projectList, setProjectList] = useState<ProjectListEntry[]>([]);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectCreateState, setProjectCreateState] = useState<ProjectCreateState>(initialCreateState);
 
@@ -505,7 +545,9 @@ export function useWebSocket(url: string): WebSocketState {
           return {
             ...prev,
             active: data.stage !== "done",
+            historical: false,
             projectName: data.projectName,
+            projectDir: data.projectDir ?? prev.projectDir,
             stage: data.stage,
             message: data.message ?? prev.message,
             taskCount: data.taskCount ?? prev.taskCount,
@@ -592,6 +634,55 @@ export function useWebSocket(url: string): WebSocketState {
         break;
       }
 
+      case "project:create_log_replay_start": {
+        setProjectCreateState((prev) => {
+          // If we're in a live run for a different project, don't clobber it.
+          if (prev.active && prev.projectDir && prev.projectDir !== data.projectDir) return prev;
+          const meta = data.meta;
+          const errKind = meta?.errorKind ?? undefined;
+          const errMessage = meta && errKind
+            ? errKind === "plan_parse_timeout"
+              ? `Agent timed out.${meta.stderrTail ? `\n${meta.stderrTail}` : ""}`
+              : `Agent failed (exit ${meta.exitCode}).${meta.stderrTail ? `\n${meta.stderrTail}` : ""}`
+            : null;
+          return {
+            ...initialCreateState,
+            historical: true,
+            projectName: data.projectName,
+            projectDir: data.projectDir,
+            stage: meta && meta.exitCode === 0 ? "plan_parsed" : "parsing_plan",
+            message: meta
+              ? `Persisted parse from ${new Date(meta.startedAt).toLocaleString()}`
+              : "No prior parse log available for this project.",
+            meta,
+            taskCount: meta?.taskCount ?? 0,
+            error: errMessage
+              ? { message: errMessage, kind: errKind, projectDir: data.projectDir }
+              : null,
+            planningUsage: meta
+              ? {
+                  model: meta.model,
+                  effort: meta.effort,
+                  tokensIn: meta.usage.tokensIn,
+                  tokensOut: meta.usage.tokensOut,
+                  cost: meta.usage.cost,
+                  contextLimit: initialPlanningUsage.contextLimit,
+                  contextPercentage: 0,
+                  subagentCount: meta.usage.subagentCount,
+                  live: false,
+                }
+              : initialPlanningUsage,
+          };
+        });
+        break;
+      }
+
+      case "project:create_log_replay_end": {
+        // State was fully hydrated by replay_start + the replayed project:create_log
+        // events; nothing more to do here.
+        break;
+      }
+
       case "run:notification": {
         // Could show as toast, for now no-op
         break;
@@ -647,17 +738,64 @@ export function useWebSocket(url: string): WebSocketState {
     if (event.type === "project:create") {
       resetStreamSeq();
       setProjectCreateState({
+        ...initialCreateState,
         active: true,
         projectName: event.projectName,
-        stage: null,
         message: "Sending request...",
-        logs: [],
-        events: [],
-        taskCount: 0,
-        error: null,
-        planningUsage: initialPlanningUsage,
       });
       setProjectError(null);
+    }
+    if (event.type === "project:retry_parse") {
+      resetStreamSeq();
+      const projectName = event.projectDir.split("/").filter(Boolean).pop() ?? null;
+      setProjectCreateState({
+        ...initialCreateState,
+        active: true,
+        projectName,
+        projectDir: event.projectDir,
+        stage: "parsing_plan",
+        message: "Retrying parse...",
+      });
+      setProjectError(null);
+    }
+    if (event.type === "project:resume_parse") {
+      resetStreamSeq();
+      const projectName = event.projectDir.split("/").filter(Boolean).pop() ?? null;
+      setProjectCreateState({
+        ...initialCreateState,
+        active: true,
+        projectName,
+        projectDir: event.projectDir,
+        stage: "parsing_plan",
+        message: "Resuming prior parse session...",
+      });
+      setProjectError(null);
+    }
+    if (event.type === "project:load_tasks") {
+      resetStreamSeq();
+      const projectName = event.projectDir.split("/").filter(Boolean).pop() ?? null;
+      setProjectCreateState({
+        ...initialCreateState,
+        active: true,
+        projectName,
+        projectDir: event.projectDir,
+        stage: "plan_parsed",
+        message: "Loading tasks from tasks.json...",
+      });
+      setProjectError(null);
+    }
+    if (event.type === "project:create_log_tail") {
+      resetStreamSeq();
+      const projectName = event.projectDir.split("/").filter(Boolean).pop() ?? null;
+      setProjectCreateState({
+        ...initialCreateState,
+        active: false,
+        historical: true,
+        projectName,
+        projectDir: event.projectDir,
+        stage: "parsing_plan",
+        message: "Loading persisted log...",
+      });
     }
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify(event));

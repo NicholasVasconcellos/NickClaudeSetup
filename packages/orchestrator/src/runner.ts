@@ -4,7 +4,18 @@ import os from "node:os";
 
 import { Database } from "./db.js";
 import { GitManager } from "./git.js";
-import { parsePlanToTasks, scaffoldProject, listProjects, agentParsePlan, loadSkillBody } from "./project.js";
+import {
+  parsePlanToTasks,
+  scaffoldProject,
+  listProjects,
+  agentParsePlan,
+  loadSkillBody,
+  readParsePlanState,
+  readParsePlanMeta,
+  loadTaskDefs,
+  insertTaskDefs,
+  parsePlanMetaPath,
+} from "./project.js";
 import { ClaudeRunner } from "./claude.js";
 import { StateMachine } from "./state-machine.js";
 import { EventBus } from "./ws-server.js";
@@ -18,6 +29,7 @@ import type {
   TaskState,
   RunSummary,
   WSEventFromClient,
+  ParsePlanMeta,
 } from "./types.js";
 import { MODEL_CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT } from "./types.js";
 
@@ -1075,9 +1087,12 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
               db: this.db,
               planContent: effectivePlan,
               projectDir: result.projectDir,
+              projectName,
               model: planModel,
               effort: planEffort,
-              timeout: this.config.taskTimeout,
+              // Parse-plan is a one-shot ultrathink call; it takes longer than per-task
+              // execution. Override the shared 10-min task budget to 30 min here.
+              timeout: 30 * 60 * 1000,
               onOutput: (line) => {
                 this.events.broadcast({
                   type: "project:create_log",
@@ -1120,7 +1135,7 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
               const errMsg = parseResult.errors.join("\n");
               this.events.broadcast({
                 type: "project:create_error",
-                kind: "plan_parse",
+                kind: parseResult.timedOut ? "plan_parse_timeout" : "plan_parse",
                 error: `Plan parsing errors:\n${errMsg}`,
                 projectDir: result.projectDir,
               });
@@ -1183,6 +1198,523 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           this.events.broadcast({ type: "project:list_result", projects });
         } catch (err) {
           console.error("[runner] project:list failed:", err);
+        }
+        break;
+      }
+
+      case "project:create_log_tail": {
+        const { projectDir } = event as { type: "project:create_log_tail"; projectDir: string };
+        const resolvedDir = projectDir.startsWith("~")
+          ? path.join(os.homedir(), projectDir.slice(1))
+          : path.resolve(projectDir);
+        const state = readParsePlanState(resolvedDir);
+        const projectName = state.meta?.projectName ?? path.basename(resolvedDir);
+        this.events.broadcast({
+          type: "project:create_log_replay_start",
+          projectDir: resolvedDir,
+          projectName,
+          meta: state.meta,
+        });
+        for (const line of state.logLines) {
+          this.events.broadcast({ type: "project:create_log", projectName, line });
+        }
+        this.events.broadcast({ type: "project:create_log_replay_end", projectDir: resolvedDir });
+        break;
+      }
+
+      case "project:retry_parse": {
+        const { projectDir } = event as { type: "project:retry_parse"; projectDir: string };
+        const resolvedDir = projectDir.startsWith("~")
+          ? path.join(os.homedir(), projectDir.slice(1))
+          : path.resolve(projectDir);
+        const projectName = path.basename(resolvedDir);
+
+        if (this.creatingProject) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "concurrent",
+            error: `Another project creation is already in progress (${this.creatingProject}). Wait for it to finish.`,
+          });
+          break;
+        }
+
+        // Read the scaffold's plan.md (written by scaffoldProject).
+        const planPath = path.join(resolvedDir, "plan.md");
+        let effectivePlan: string;
+        try {
+          effectivePlan = fs.readFileSync(planPath, "utf-8");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "plan_read",
+            error: `Could not read plan.md at ${planPath}: ${msg}`,
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        const dbPath = path.join(resolvedDir, ".orchestrator/orchestrator.db");
+        if (!fs.existsSync(dbPath)) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "scaffold",
+            error: `No orchestrator DB at ${dbPath}. Retry is only valid for previously-scaffolded projects.`,
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        this.creatingProject = projectName;
+        try {
+          // Re-point Runner to the retry project (same pattern as project:create).
+          this.db.close();
+          this.config.projectDir = resolvedDir;
+          this.config.dbPath = dbPath;
+          this.db = new Database(dbPath);
+          this.db.init();
+          this.git = new GitManager(this.config);
+
+          // Refuse retry if tasks already exist — agentParsePlan would otherwise
+          // double-insert. User must clear the project manually to re-parse.
+          const existingTasks = this.db.getAllTasks();
+          if (existingTasks.length > 0) {
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: "plan_parse",
+              error: `Project already has ${existingTasks.length} tasks. Retry is only valid for empty/failed projects.`,
+              projectDir: resolvedDir,
+            });
+            break;
+          }
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "scaffolded",
+            projectName,
+            projectDir: resolvedDir,
+            message: `Retrying parse for ${projectName}.`,
+          });
+
+          const planModel = this.config.models.planning;
+          const planEffort = this.config.planningEffort;
+          const planContextLimit = MODEL_CONTEXT_LIMITS[planModel] ?? DEFAULT_CONTEXT_LIMIT;
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "parsing_plan",
+            projectName,
+            projectDir: resolvedDir,
+            message: "Re-parsing plan with Claude (ultrathink). This may take several minutes...",
+          });
+          this.events.broadcast({
+            type: "project:create_agent_started",
+            projectName,
+            model: planModel,
+            effort: planEffort,
+          });
+
+          const parseResult = await agentParsePlan({
+            claude: this.claude,
+            db: this.db,
+            planContent: effectivePlan,
+            projectDir: resolvedDir,
+            projectName,
+            model: planModel,
+            effort: planEffort,
+            timeout: 30 * 60 * 1000,
+            onOutput: (line) => {
+              this.events.broadcast({ type: "project:create_log", projectName, line });
+            },
+            onUsage: (usage) => {
+              const used = usage.tokensIn + usage.tokensOut;
+              const pct = Math.min(100, (used / planContextLimit) * 100);
+              this.events.broadcast({
+                type: "project:create_agent_usage",
+                projectName,
+                tokensIn: usage.tokensIn,
+                tokensOut: usage.tokensOut,
+                cost: usage.cost,
+                contextLimit: planContextLimit,
+                contextPercentage: pct,
+                subagentCount: usage.subagentCount,
+              });
+            },
+          });
+
+          const finalUsage = parseResult.usage ?? { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
+          const finalUsed = finalUsage.tokensIn + finalUsage.tokensOut;
+          const finalPct = Math.min(100, (finalUsed / planContextLimit) * 100);
+          this.events.broadcast({
+            type: "project:create_agent_finished",
+            projectName,
+            model: parseResult.model ?? planModel,
+            tokensIn: finalUsage.tokensIn,
+            tokensOut: finalUsage.tokensOut,
+            cost: finalUsage.cost,
+            contextLimit: planContextLimit,
+            contextPercentage: finalPct,
+            subagentCount: finalUsage.subagentCount,
+          });
+
+          if (parseResult.errors.length > 0) {
+            const errMsg = parseResult.errors.join("\n");
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: parseResult.timedOut ? "plan_parse_timeout" : "plan_parse",
+              error: `Plan parsing errors:\n${errMsg}`,
+              projectDir: resolvedDir,
+            });
+            console.error("[runner] retry plan parse failed:", errMsg);
+            break;
+          }
+
+          for (const task of parseResult.tasks) {
+            this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+            this.events.taskCreated(task.id, task.title);
+          }
+          const taskCount = parseResult.taskCount;
+          this.events.planLoaded(taskCount);
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "plan_parsed",
+            projectName,
+            projectDir: resolvedDir,
+            taskCount,
+            message: `Re-parsed ${taskCount} task${taskCount === 1 ? "" : "s"} from plan.`,
+          });
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "done",
+            projectName,
+            projectDir: resolvedDir,
+            taskCount,
+            message: "Project ready.",
+          });
+          this.events.broadcast({
+            type: "project:created",
+            projectDir: resolvedDir,
+            dbPath,
+            taskCount,
+          });
+          this.events.broadcast({ type: "project:info", name: projectName, dir: resolvedDir });
+          console.log(`[runner] retry-parsed project: ${resolvedDir} (${taskCount} tasks)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({ type: "project:create_error", kind: "unknown", error: msg, projectDir: resolvedDir });
+          console.error("[runner] project:retry_parse failed:", err);
+        } finally {
+          this.creatingProject = null;
+        }
+        break;
+      }
+
+      case "project:resume_parse": {
+        const { projectDir } = event as { type: "project:resume_parse"; projectDir: string };
+        const resolvedDir = projectDir.startsWith("~")
+          ? path.join(os.homedir(), projectDir.slice(1))
+          : path.resolve(projectDir);
+        const projectName = path.basename(resolvedDir);
+
+        const meta = readParsePlanMeta(resolvedDir);
+        if (!meta || !meta.sessionId) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "plan_parse",
+            error: "No session to resume. Use Retry parse instead.",
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        if (this.creatingProject) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "concurrent",
+            error: `Another project creation is already in progress (${this.creatingProject}). Wait for it to finish.`,
+          });
+          break;
+        }
+
+        const planPath = path.join(resolvedDir, "plan.md");
+        let effectivePlan: string;
+        try {
+          effectivePlan = fs.readFileSync(planPath, "utf-8");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "plan_read",
+            error: `Could not read plan.md at ${planPath}: ${msg}`,
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        const dbPath = path.join(resolvedDir, ".orchestrator/orchestrator.db");
+        if (!fs.existsSync(dbPath)) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "scaffold",
+            error: `No orchestrator DB at ${dbPath}.`,
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        this.creatingProject = projectName;
+        try {
+          this.db.close();
+          this.config.projectDir = resolvedDir;
+          this.config.dbPath = dbPath;
+          this.db = new Database(dbPath);
+          this.db.init();
+          this.git = new GitManager(this.config);
+
+          const existingTasks = this.db.getAllTasks();
+          if (existingTasks.length > 0) {
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: "plan_parse",
+              error: `Project already has ${existingTasks.length} tasks. Resume is only valid for empty/failed projects.`,
+              projectDir: resolvedDir,
+            });
+            break;
+          }
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "scaffolded",
+            projectName,
+            projectDir: resolvedDir,
+            message: `Resuming parse for ${projectName} from session ${meta.sessionId.slice(0, 8)}…`,
+          });
+
+          const planModel = this.config.models.planning;
+          const planEffort = this.config.planningEffort;
+          const planContextLimit = MODEL_CONTEXT_LIMITS[planModel] ?? DEFAULT_CONTEXT_LIMIT;
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "parsing_plan",
+            projectName,
+            projectDir: resolvedDir,
+            message: "Resuming prior parse session…",
+          });
+          this.events.broadcast({
+            type: "project:create_agent_started",
+            projectName,
+            model: planModel,
+            effort: planEffort,
+          });
+
+          const parseResult = await agentParsePlan({
+            claude: this.claude,
+            db: this.db,
+            planContent: effectivePlan,
+            projectDir: resolvedDir,
+            projectName,
+            model: planModel,
+            effort: planEffort,
+            timeout: 30 * 60 * 1000,
+            resumeSessionId: meta.sessionId,
+            onOutput: (line) => {
+              this.events.broadcast({ type: "project:create_log", projectName, line });
+            },
+            onUsage: (usage) => {
+              const used = usage.tokensIn + usage.tokensOut;
+              const pct = Math.min(100, (used / planContextLimit) * 100);
+              this.events.broadcast({
+                type: "project:create_agent_usage",
+                projectName,
+                tokensIn: usage.tokensIn,
+                tokensOut: usage.tokensOut,
+                cost: usage.cost,
+                contextLimit: planContextLimit,
+                contextPercentage: pct,
+                subagentCount: usage.subagentCount,
+              });
+            },
+          });
+
+          const finalUsage = parseResult.usage ?? { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
+          const finalUsed = finalUsage.tokensIn + finalUsage.tokensOut;
+          const finalPct = Math.min(100, (finalUsed / planContextLimit) * 100);
+          this.events.broadcast({
+            type: "project:create_agent_finished",
+            projectName,
+            model: parseResult.model ?? planModel,
+            tokensIn: finalUsage.tokensIn,
+            tokensOut: finalUsage.tokensOut,
+            cost: finalUsage.cost,
+            contextLimit: planContextLimit,
+            contextPercentage: finalPct,
+            subagentCount: finalUsage.subagentCount,
+          });
+
+          if (parseResult.errors.length > 0) {
+            const errMsg = parseResult.errors.join("\n");
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: parseResult.timedOut ? "plan_parse_timeout" : "plan_parse",
+              error: `Plan parsing errors:\n${errMsg}`,
+              projectDir: resolvedDir,
+            });
+            console.error("[runner] resume plan parse failed:", errMsg);
+            break;
+          }
+
+          for (const task of parseResult.tasks) {
+            this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+            this.events.taskCreated(task.id, task.title);
+          }
+          const taskCount = parseResult.taskCount;
+          this.events.planLoaded(taskCount);
+
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "plan_parsed",
+            projectName,
+            projectDir: resolvedDir,
+            taskCount,
+            message: `Resumed-parsed ${taskCount} task${taskCount === 1 ? "" : "s"} from plan.`,
+          });
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "done",
+            projectName,
+            projectDir: resolvedDir,
+            taskCount,
+            message: "Project ready.",
+          });
+          this.events.broadcast({
+            type: "project:created",
+            projectDir: resolvedDir,
+            dbPath,
+            taskCount,
+          });
+          this.events.broadcast({ type: "project:info", name: projectName, dir: resolvedDir });
+          console.log(`[runner] resumed-parsed project: ${resolvedDir} (${taskCount} tasks)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({ type: "project:create_error", kind: "unknown", error: msg, projectDir: resolvedDir });
+          console.error("[runner] project:resume_parse failed:", err);
+        } finally {
+          this.creatingProject = null;
+        }
+        break;
+      }
+
+      case "project:load_tasks": {
+        const { projectDir } = event as { type: "project:load_tasks"; projectDir: string };
+        const resolvedDir = projectDir.startsWith("~")
+          ? path.join(os.homedir(), projectDir.slice(1))
+          : path.resolve(projectDir);
+        const projectName = path.basename(resolvedDir);
+
+        if (this.creatingProject) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "concurrent",
+            error: `Another project creation is already in progress (${this.creatingProject}). Wait for it to finish.`,
+          });
+          break;
+        }
+
+        const dbPath = path.join(resolvedDir, ".orchestrator/orchestrator.db");
+        if (!fs.existsSync(dbPath)) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "scaffold",
+            error: `No orchestrator DB at ${dbPath}. Project must be scaffolded first.`,
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        this.creatingProject = projectName;
+        try {
+          this.db.close();
+          this.config.projectDir = resolvedDir;
+          this.config.dbPath = dbPath;
+          this.db = new Database(dbPath);
+          this.db.init();
+          this.git = new GitManager(this.config);
+
+          const existingTasks = this.db.getAllTasks();
+          if (existingTasks.length > 0) {
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: "plan_parse",
+              error: `Project already has ${existingTasks.length} tasks. Load-tasks refuses to add duplicates.`,
+              projectDir: resolvedDir,
+            });
+            break;
+          }
+
+          const taskDefs = await loadTaskDefs(resolvedDir);
+          const { created, errors } = insertTaskDefs(this.db, taskDefs);
+
+          if (errors.length > 0) {
+            this.events.broadcast({
+              type: "project:create_error",
+              kind: "plan_parse",
+              error: `Task load errors:\n${errors.join("\n")}`,
+              projectDir: resolvedDir,
+            });
+            console.error("[runner] project:load_tasks errors:", errors);
+            break;
+          }
+
+          const now = new Date().toISOString();
+          const meta: ParsePlanMeta = {
+            projectName,
+            startedAt: now,
+            finishedAt: now,
+            exitCode: 0,
+            timedOut: false,
+            errorKind: null,
+            stderrTail: "",
+            model: "manual-load",
+            effort: "medium",
+            taskCount: created.length,
+            sessionId: null,
+            usage: { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 },
+          };
+          try {
+            fs.writeFileSync(parsePlanMetaPath(resolvedDir), JSON.stringify(meta, null, 2));
+          } catch {
+            // best-effort
+          }
+
+          for (const task of created) {
+            this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+            this.events.taskCreated(task.id, task.title);
+          }
+          this.events.planLoaded(created.length);
+          this.events.broadcast({
+            type: "project:create_progress",
+            stage: "done",
+            projectName,
+            projectDir: resolvedDir,
+            taskCount: created.length,
+            message: `Loaded ${created.length} task${created.length === 1 ? "" : "s"} from tasks.json.`,
+          });
+          this.events.broadcast({
+            type: "project:created",
+            projectDir: resolvedDir,
+            dbPath,
+            taskCount: created.length,
+          });
+          this.events.broadcast({ type: "project:info", name: projectName, dir: resolvedDir });
+          console.log(`[runner] loaded tasks into project: ${resolvedDir} (${created.length} tasks)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({ type: "project:create_error", kind: "plan_parse", error: msg, projectDir: resolvedDir });
+          console.error("[runner] project:load_tasks failed:", err);
+        } finally {
+          this.creatingProject = null;
         }
         break;
       }

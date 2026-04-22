@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import type { PlanningAgentUsage, ProjectCreateState, ProjectCreateStage } from "@/hooks/useWebSocket";
+import type { ParsePlanStatus, PlanningAgentUsage, ProjectCreateState, ProjectCreateStage } from "@/hooks/useWebSocket";
 import CreateLogPanel from "./CreateLogPanel";
 
 function PlanningMetrics({ usage }: { usage: PlanningAgentUsage }) {
@@ -116,6 +116,9 @@ interface ProjectInfo {
   path: string;
   taskCount: number;
   lastModified: string;
+  parseStatus: ParsePlanStatus;
+  hasTasksJson: boolean;
+  canResumeParse: boolean;
 }
 
 interface ProjectSetupProps {
@@ -123,6 +126,10 @@ interface ProjectSetupProps {
   projectList: ProjectInfo[];
   onCreateProject: (projectName: string, baseDir: string, planMarkdown?: string, planPath?: string) => void;
   onListProjects: (baseDir: string) => void;
+  onTailLog: (projectDir: string) => void;
+  onRetryParse: (projectDir: string) => void;
+  onResumeParse: (projectDir: string) => void;
+  onLoadTasks: (projectDir: string) => void;
   createError: string | null;
   createState: ProjectCreateState;
 }
@@ -149,6 +156,24 @@ const labelStyle: React.CSSProperties = {
   display: "block",
 };
 
+function getParseStatusBadge(project: { parseStatus: ParsePlanStatus; taskCount: number }): {
+  label: string;
+  color: string;
+  bg: string;
+} {
+  if (project.parseStatus === "ok") {
+    return { label: "Ready", color: "var(--success)", bg: "rgba(34,197,94,0.08)" };
+  }
+  if (project.parseStatus === "failed") {
+    return { label: "Parse failed", color: "var(--error)", bg: "rgba(239,68,68,0.08)" };
+  }
+  // unknown: no meta file. If tasks exist, treat as pre-existing ready project.
+  if (project.taskCount > 0) {
+    return { label: "Ready", color: "var(--success)", bg: "rgba(34,197,94,0.08)" };
+  }
+  return { label: "Scaffold only", color: "var(--text-muted)", bg: "var(--bg-tertiary)" };
+}
+
 const inputStyle = (focused: boolean, error = false): React.CSSProperties => ({
   backgroundColor: "var(--bg-tertiary)",
   border: `1px solid ${error ? "var(--error)" : focused ? "var(--accent)" : "var(--border)"}`,
@@ -167,6 +192,10 @@ export default function ProjectSetup({
   projectList,
   onCreateProject,
   onListProjects,
+  onTailLog,
+  onRetryParse,
+  onResumeParse,
+  onLoadTasks,
   createError,
   createState,
 }: ProjectSetupProps) {
@@ -685,8 +714,33 @@ export default function ProjectSetup({
                             Another create is already running.
                           </div>
                         )}
+                        {createState.error.kind === "plan_parse_timeout" && (
+                          <div style={{ marginBottom: 6, fontWeight: 600 }}>
+                            Agent timed out (often caused by system sleep or network hang).
+                          </div>
+                        )}
                         {createState.error.message}
                       </div>
+                    )}
+
+                    {(createState.error?.kind === "plan_parse" || createState.error?.kind === "plan_parse_timeout") && createState.error.projectDir && (
+                      <button
+                        onClick={() => onRetryParse(createState.error!.projectDir!)}
+                        disabled={creating}
+                        style={{
+                          backgroundColor: creating ? "var(--bg-tertiary)" : "var(--accent)dd",
+                          color: creating ? "var(--text-muted)" : "#fff",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "8px 0",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: creating ? "not-allowed" : "pointer",
+                          width: "100%",
+                        }}
+                      >
+                        {creating ? "Retrying..." : "Retry parse (keeps scaffold)"}
+                      </button>
                     )}
                   </div>
                 )}
@@ -757,55 +811,212 @@ export default function ProjectSetup({
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {projectList.map((project) => (
-                      <button
-                        key={project.path}
-                        onMouseEnter={() => setHovered(`proj-${project.path}`)}
-                        onMouseLeave={() => setHovered(null)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          backgroundColor:
-                            hovered === `proj-${project.path}`
-                              ? "var(--bg-tertiary)"
-                              : "var(--bg-primary)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 8,
-                          padding: "12px 16px",
-                          cursor: "pointer",
-                          transition: "background-color 0.15s",
-                          width: "100%",
-                          textAlign: "left",
-                        }}
-                      >
-                        <div>
-                          <div
-                            style={{
-                              fontSize: 14,
-                              fontWeight: 600,
-                              color: "var(--text-primary)",
-                              marginBottom: 2,
-                            }}
-                          >
-                            {project.name}
+                    {projectList.map((project) => {
+                      const badge = getParseStatusBadge(project);
+                      return (
+                        <button
+                          key={project.path}
+                          onClick={() => onTailLog(project.path)}
+                          onMouseEnter={() => setHovered(`proj-${project.path}`)}
+                          onMouseLeave={() => setHovered(null)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            backgroundColor:
+                              hovered === `proj-${project.path}`
+                                ? "var(--bg-tertiary)"
+                                : "var(--bg-primary)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 8,
+                            padding: "12px 16px",
+                            cursor: "pointer",
+                            transition: "background-color 0.15s",
+                            width: "100%",
+                            textAlign: "left",
+                          }}
+                        >
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                marginBottom: 2,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: 14,
+                                  fontWeight: 600,
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {project.name}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  border: `1px solid ${badge.color}`,
+                                  color: badge.color,
+                                  backgroundColor: badge.bg,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {badge.label}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {project.path}
+                            </div>
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                            {project.path}
+                          <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
+                            <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                              {project.taskCount} task{project.taskCount !== 1 ? "s" : ""}
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                              {formatDate(project.lastModified)}
+                            </div>
                           </div>
-                        </div>
-                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
-                          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                            {project.taskCount} task{project.taskCount !== 1 ? "s" : ""}
-                          </div>
-                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                            {formatDate(project.lastModified)}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
+
+                {/* Historical / replayed parse-plan log for a selected project */}
+                {createState.historical && createState.projectDir && (() => {
+                  const selected = projectList.find((p) => p.path === createState.projectDir);
+                  const canResume = selected?.canResumeParse ?? false;
+                  const canLoadTasks = (selected?.hasTasksJson ?? false) && (selected?.taskCount ?? 0) === 0;
+                  return (
+                  <div
+                    style={{
+                      marginTop: 4,
+                      backgroundColor: "var(--bg-primary)",
+                      border: `1px solid ${createState.error ? "var(--error)" : "var(--border)"}`,
+                      borderRadius: 6,
+                      padding: 12,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                        {createState.error ? "Failed parse" : "Persisted parse log"} · {createState.projectName}
+                      </span>
+                      {createState.meta && (
+                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          {createState.meta.finishedAt
+                            ? `finished ${formatDate(createState.meta.finishedAt)}`
+                            : `started ${formatDate(createState.meta.startedAt)}`}
+                        </span>
+                      )}
+                    </div>
+
+                    {createState.message && (
+                      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                        {createState.message}
+                      </div>
+                    )}
+
+                    <PlanningMetrics usage={createState.planningUsage} />
+
+                    <CreateLogPanel
+                      events={createState.events}
+                      rawLogs={createState.logs}
+                      expanded={logExpanded}
+                      onToggleExpand={() => setLogExpanded((v) => !v)}
+                    />
+
+                    {createState.error && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--error)",
+                          backgroundColor: "rgba(239,68,68,0.08)",
+                          border: "1px solid var(--error)",
+                          borderRadius: 4,
+                          padding: "8px 10px",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {createState.error.kind === "plan_parse_timeout" && (
+                          <div style={{ marginBottom: 6, fontWeight: 600 }}>
+                            Agent timed out (often caused by system sleep or network hang).
+                          </div>
+                        )}
+                        {createState.error.message}
+                      </div>
+                    )}
+
+                    {canResume && (
+                      <button
+                        onClick={() => onResumeParse(createState.projectDir!)}
+                        disabled={creating}
+                        style={{
+                          backgroundColor: creating ? "var(--bg-tertiary)" : "rgba(34,197,94,0.85)",
+                          color: creating ? "var(--text-muted)" : "#fff",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "8px 0",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: creating ? "not-allowed" : "pointer",
+                          width: "100%",
+                        }}
+                        title="Continues the prior Claude session with --resume. Preserves agent context; cheaper than Retry."
+                      >
+                        {creating ? "Resuming..." : "Resume parse (keeps agent context)"}
+                      </button>
+                    )}
+
+                    {canLoadTasks && (
+                      <button
+                        onClick={() => onLoadTasks(createState.projectDir!)}
+                        disabled={creating}
+                        style={{
+                          backgroundColor: creating ? "var(--bg-tertiary)" : "var(--accent)dd",
+                          color: creating ? "var(--text-muted)" : "#fff",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "8px 0",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: creating ? "not-allowed" : "pointer",
+                          width: "100%",
+                        }}
+                        title="Seed the DB directly from tasks/tasks.json without re-running the parse agent."
+                      >
+                        {creating ? "Loading..." : "Load tasks from tasks.json"}
+                      </button>
+                    )}
+
+                    {(createState.error?.kind === "plan_parse" || createState.error?.kind === "plan_parse_timeout") && (
+                      <button
+                        onClick={() => onRetryParse(createState.projectDir!)}
+                        disabled={creating}
+                        style={{
+                          backgroundColor: creating ? "var(--bg-tertiary)" : "var(--accent)dd",
+                          color: creating ? "var(--text-muted)" : "#fff",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "8px 0",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: creating ? "not-allowed" : "pointer",
+                          width: "100%",
+                        }}
+                      >
+                        {creating ? "Retrying..." : "Retry parse"}
+                      </button>
+                    )}
+                  </div>
+                  );
+                })()}
               </>
             )}
           </div>

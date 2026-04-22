@@ -6,8 +6,8 @@ import chalk from "chalk";
 
 import { Runner } from "./runner.js";
 import { Database } from "./db.js";
-import { scaffoldProject, parsePlanToTasks, listProjects, agentParsePlan } from "./project.js";
-import { DEFAULT_CONFIG, type OrchestratorConfig } from "./types.js";
+import { scaffoldProject, parsePlanToTasks, listProjects, agentParsePlan, loadTaskDefs, insertTaskDefs, parsePlanMetaPath } from "./project.js";
+import { DEFAULT_CONFIG, type OrchestratorConfig, type ParsePlanMeta } from "./types.js";
 
 // ── Re-exports ────────────────────────────────────────────────
 
@@ -31,6 +31,7 @@ interface ParsedArgs extends Partial<OrchestratorConfig> {
   baseDir?: string;
   testCommand?: string;
   planFile?: string;
+  force?: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -74,6 +75,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--no-push":
         result.pushAfterMerge = false;
+        break;
+      case "--force":
+        result.force = true;
         break;
       case "--milestones":
         result.useMilestones = true;
@@ -323,6 +327,74 @@ function cmdStatus(args: ParsedArgs): void {
   }
 }
 
+// ── Subcommand: load-tasks ────────────────────────────────────
+
+async function cmdLoadTasks(args: ParsedArgs): Promise<void> {
+  const projectDir = args.projectDir ?? process.cwd();
+  const dbPath = path.join(projectDir, ".orchestrator", "orchestrator.db");
+
+  if (!fs.existsSync(dbPath)) {
+    console.error(chalk.red(`No orchestrator DB at ${dbPath}.`));
+    console.error(chalk.red("Run `orchestrator execute <plan.md>` first to scaffold the project."));
+    process.exit(1);
+  }
+
+  const db = new Database(dbPath);
+  db.init();
+
+  try {
+    const existing = db.getAllTasks();
+    if (existing.length > 0 && !args.force) {
+      console.error(chalk.red(`DB already has ${existing.length} tasks.`));
+      console.error(chalk.yellow("Use --force to overwrite (will duplicate; manual cleanup required) or delete the DB first."));
+      process.exit(1);
+    }
+
+    let taskDefs;
+    try {
+      taskDefs = await loadTaskDefs(projectDir);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(msg));
+      process.exit(1);
+    }
+
+    const { created, errors } = insertTaskDefs(db, taskDefs);
+
+    if (errors.length > 0) {
+      for (const e of errors) console.error(chalk.red(`  ${e}`));
+      console.error(chalk.red(`\n${errors.length} task-load error${errors.length === 1 ? "" : "s"}.`));
+      process.exit(1);
+    }
+
+    const now = new Date().toISOString();
+    const meta: ParsePlanMeta = {
+      projectName: path.basename(projectDir),
+      startedAt: now,
+      finishedAt: now,
+      exitCode: 0,
+      timedOut: false,
+      errorKind: null,
+      stderrTail: "",
+      model: "manual-load",
+      effort: "medium",
+      taskCount: created.length,
+      sessionId: null,
+      usage: { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 },
+    };
+    try {
+      fs.writeFileSync(parsePlanMetaPath(projectDir), JSON.stringify(meta, null, 2));
+    } catch (err) {
+      console.warn(chalk.yellow(`Warning: could not write parse-plan-meta.json: ${String(err)}`));
+    }
+
+    console.log(chalk.green(`Loaded ${created.length} task${created.length === 1 ? "" : "s"} into ${dbPath}`));
+    console.log(chalk.cyan(`Next: node packages/orchestrator/dist/index.js --project-dir ${projectDir}`));
+  } finally {
+    db.close();
+  }
+}
+
 // ── Dispatch ──────────────────────────────────────────────────
 
 if (isMain) {
@@ -339,6 +411,10 @@ if (isMain) {
 
     case "status":
       cmdStatus(cliArgs);
+      break;
+
+    case "load-tasks":
+      cmdLoadTasks(cliArgs);
       break;
 
     default: {

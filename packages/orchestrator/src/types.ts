@@ -157,6 +157,35 @@ export interface Session {
   totalCost: number;
 }
 
+// ── Parse-Plan Persistence ───────────────────────────────────
+
+/** Status derived from presence of parse-plan-meta.json + its exitCode. */
+export type ParsePlanStatus = "ok" | "failed" | "unknown";
+
+/**
+ * Sidecar metadata written to <projectDir>/.orchestrator/parse-plan-meta.json
+ * on every parse-plan run (both success and failure). Survives server restart.
+ */
+export interface ParsePlanMeta {
+  projectName: string;
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number;
+  timedOut: boolean;
+  errorKind: "plan_parse" | "plan_parse_timeout" | null;
+  stderrTail: string;
+  model: string;
+  effort: TaskEffort;
+  taskCount: number;
+  sessionId: string | null;
+  usage: {
+    tokensIn: number;
+    tokensOut: number;
+    cost: number;
+    subagentCount: number;
+  };
+}
+
 // ── WebSocket Events ─────────────────────────────────────────
 
 export type WSEventFromServer =
@@ -179,14 +208,16 @@ export type WSEventFromServer =
   | { type: "skills:content"; skillName: string; content: string; variations: Array<{ name: string; content: string }> }
   | { type: "files:tree_result"; tree: Array<{ path: string; type: "file" | "directory"; children?: any[] }> }
   | { type: "project:created"; projectDir: string; dbPath: string; taskCount: number }
-  | { type: "project:create_error"; error: string; kind?: "collision" | "plan_read" | "plan_parse" | "scaffold" | "concurrent" | "unknown"; projectDir?: string }
+  | { type: "project:create_error"; error: string; kind?: "collision" | "plan_read" | "plan_parse" | "plan_parse_timeout" | "scaffold" | "concurrent" | "unknown"; projectDir?: string }
   | { type: "project:create_progress"; stage: "scaffolding" | "scaffolded" | "parsing_plan" | "plan_parsed" | "done"; projectName: string; projectDir?: string; taskCount?: number; message?: string }
   | { type: "project:create_log"; projectName: string; line: string }
   | { type: "project:create_agent_started"; projectName: string; model: string; effort: TaskEffort }
   | { type: "project:create_agent_usage"; projectName: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
   | { type: "project:create_agent_finished"; projectName: string; model: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
-  | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
-  | { type: "project:info"; name: string; dir: string };
+  | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string; parseStatus: ParsePlanStatus; hasTasksJson: boolean; canResumeParse: boolean }> }
+  | { type: "project:info"; name: string; dir: string }
+  | { type: "project:create_log_replay_start"; projectDir: string; projectName: string; meta: ParsePlanMeta | null }
+  | { type: "project:create_log_replay_end"; projectDir: string };
 
 export type WSEventFromClient =
   | { type: "task:pause"; taskId: number }
@@ -207,7 +238,11 @@ export type WSEventFromClient =
   | { type: "skills:activate"; skillName: string; variationName: string }
   | { type: "files:tree" }
   | { type: "project:create"; projectName: string; baseDir: string; planMarkdown?: string; planPath?: string }
-  | { type: "project:list"; baseDir: string };
+  | { type: "project:list"; baseDir: string }
+  | { type: "project:create_log_tail"; projectDir: string }
+  | { type: "project:retry_parse"; projectDir: string }
+  | { type: "project:resume_parse"; projectDir: string }
+  | { type: "project:load_tasks"; projectDir: string };
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -292,4 +327,6 @@ export interface ClaudeResult {
   tokensIn: number;
   tokensOut: number;
   duration: number;
+  /** True when runTask aborted the subprocess because the timeout elapsed. */
+  timedOut: boolean;
 }

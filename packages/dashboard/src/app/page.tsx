@@ -43,6 +43,22 @@ export default function DashboardPage() {
     sendCommand({ type: "project:list", baseDir });
   };
 
+  const handleTailLog = (projectDir: string) => {
+    sendCommand({ type: "project:create_log_tail", projectDir });
+  };
+
+  const handleRetryParse = (projectDir: string) => {
+    sendCommand({ type: "project:retry_parse", projectDir });
+  };
+
+  const handleResumeParse = (projectDir: string) => {
+    sendCommand({ type: "project:resume_parse", projectDir });
+  };
+
+  const handleLoadTasks = (projectDir: string) => {
+    sendCommand({ type: "project:load_tasks", projectDir });
+  };
+
   const handleOpenInVSCode = () => {
     if (projectInfo?.dir) {
       window.open(`vscode://file/${encodeURIComponent(projectInfo.dir)}`);
@@ -201,6 +217,10 @@ export default function DashboardPage() {
         projectList={projectList}
         onCreateProject={handleCreateProject}
         onListProjects={handleListProjects}
+        onTailLog={handleTailLog}
+        onRetryParse={handleRetryParse}
+        onResumeParse={handleResumeParse}
+        onLoadTasks={handleLoadTasks}
         createError={projectError}
         createState={projectCreateState}
       />
