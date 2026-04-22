@@ -87,7 +87,11 @@ Schema:
 Rules for the JSON output:
 - `title`: unique across all tasks (used as the dependency identifier)
 - `description`: full, detailed, self-contained, written as a PM handoff to a senior engineer — full context about the feature, how it fits into the project, and what done looks like
-- `contextFiles`: paths to existing files the implementing agent should read for context before starting. Omit or pass `[]` if none
+- `contextFiles`: existing-file paths that will be auto-loaded into the implementing agent's prompt as `@path` mentions. Goal: give the agent everything it needs so it never has to grep, glob, or open-ended explore. Use `CODEBASE.md` as the source-of-truth when picking paths.
+  - **Include**: files the task will edit; files whose types/APIs/exports the task imports or calls; one or two exemplar files showing the pattern to mirror (e.g. a sibling component, a similar route handler, an existing test of the same shape); the parent module's index/barrel if symbols are re-exported.
+  - **Exclude**: `CODEBASE.md`, `package.json`, `tsconfig.json`, lockfiles, anything in `node_modules`/`dist`/generated dirs; very large files (>1k lines) unless essential — prefer a smaller adjacent file; files that are only tangentially related ("might be useful").
+  - Be deliberate, not exhaustive. Every extra file consumes the executing agent's context. Empty `[]` is correct for greenfield tasks creating brand-new files with no existing analogues.
+  - `docs/<lib>/...` files generated in Step 2 should be listed here when the task touches that library.
 - `dependsOn`: references `title` strings exactly as written; use `[]` if there are no dependencies. Only list direct dependencies — they should follow naturally from the logical flow of the task list
 
 After writing the file, validate it parses as JSON before finishing your turn.

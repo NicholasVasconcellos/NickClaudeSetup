@@ -87,6 +87,7 @@ Each subagent must return a JSON array of tasks:
   {
     "title": "string",
     "description": "string — what to build and the exact acceptance criteria",
+    "contextFiles": ["path/to/file1", "path/to/file2"],
     "dependsOn": ["task title", "..."]
   }
 ]
@@ -97,8 +98,12 @@ Subagent rules:
 - A task must be **atomic** (one agent, one session), **concrete** (self-contained description), and **verifiable** (explicit acceptance criteria)
 - `dependsOn` may reference titles within the same milestone OR boundary task titles from upstream milestones — nothing else
 - `title` must be unique and descriptive (it becomes the global identifier)
+- `contextFiles`: file paths auto-loaded into the implementing agent's prompt as `@path` mentions. Goal: give the agent everything it needs so it never has to grep, glob, or open-ended explore. Use `CODEBASE.md` as the source-of-truth.
+  - Example Include: files the task will edit; files whose types/APIs/exports the task calls; one or two exemplar files showing the pattern to mirror; parent index/barrel files if symbols are re-exported; relevant `docs/<lib>/...` files for libraries this task uses.
+  - Exclude: `CODEBASE.md`, `package.json`, `tsconfig.json`, lockfiles, `node_modules`/`dist`/generated dirs; very large files (>1k lines) unless essential; tangentially related files.
+  - Be deliberate, not exhaustive. Every extra file costs context. `[]` is correct for greenfield tasks with no existing analogues.
 - Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task. No upper or lower limit on task count — decompose until every task is truly atomic
-- Do not write code, create files, or ask clarifying questions
+- Do not write code, create files, no need to ask clarifying questions, the plan is finalized and polished
 
 Spawn subagents for independent milestones in parallel when possible.
 
@@ -138,6 +143,7 @@ Schema:
         {
           "title": "string",
           "description": "string — what to build and the exact acceptance criteria",
+          "contextFiles": ["path/to/file1", "path/to/file2"],
           "dependsOn": ["task title", "..."]
         }
       ]
@@ -152,6 +158,7 @@ Rules for the JSON output:
 
 - `title` is unique across all milestones
 - `description` is self-contained — a fresh agent must be able to read it and know exactly what to implement and how to verify it is done
+- `contextFiles` carries forward exactly as the subagent set it. Omit or use `[]` if none — see Step 5 for selection rules
 - `dependsOn` references `title` strings exactly as written; use `[]` only if the task has zero prerequisites across the entire project
 
 ## Step 8 — Post-output checklist

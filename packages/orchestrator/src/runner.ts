@@ -696,6 +696,10 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
       ? `\n\n## Completed dependency tasks\n${titles}`
       : "";
 
+    const ctxFileRefs = task.contextFiles.length > 0
+      ? `\n\n## Context files\n${task.contextFiles.map(f => `@${f}`).join(" ")}`
+      : "";
+
     const depFileRefs = files.length > 0
       ? `\n\n## Dependency files\n${files.map(f => `@${f}`).join(" ")}`
       : "";
@@ -703,7 +707,7 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
     // Invoke the corresponding skill for spec/execute/review/document; merge has no skill
     const skillInvocation = phase !== "merge" ? `/${phase}\n\n` : "";
 
-    return `${skillInvocation}${taskSection}${depTitleSection}${depFileRefs}`;
+    return `${skillInvocation}${taskSection}${depTitleSection}${ctxFileRefs}${depFileRefs}`;
   }
 
   // ── waitForApproval ──────────────────────────────────────
