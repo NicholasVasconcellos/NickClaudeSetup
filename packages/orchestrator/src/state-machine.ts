@@ -49,6 +49,10 @@ export class StateMachine {
     this.db = db;
   }
 
+  setDb(db: Database): void {
+    this.db = db;
+  }
+
   // ── Core transition ────────────────────────────────────────
 
   /**

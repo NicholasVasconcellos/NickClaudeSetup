@@ -46,6 +46,10 @@ export class LearningPipeline {
     this.config = config;
   }
 
+  setDb(db: Database): void {
+    this.db = db;
+  }
+
   // ── Stage 1: Capture ────────────────────────────────────────
 
   /**

@@ -83,6 +83,23 @@ export class Runner {
     this.creatingProject = null;
   }
 
+  // ── swapDatabase ─────────────────────────────────────────
+  //
+  // Close the current DB and reopen at `dbPath`, propagating the new
+  // instance to helpers that cached a reference at construction time
+  // (StateMachine, LearningPipeline). Also rebuilds GitManager against
+  // the updated config.projectDir — callers must set config.projectDir
+  // before calling this.
+  private swapDatabase(dbPath: string): void {
+    this.db.close();
+    this.config.dbPath = dbPath;
+    this.db = new Database(dbPath);
+    this.db.init();
+    this.stateMachine.setDb(this.db);
+    this.learning.setDb(this.db);
+    this.git = new GitManager(this.config);
+  }
+
   // ── init ──────────────────────────────────────────────────
 
   async init(): Promise<void> {
@@ -1054,12 +1071,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           });
 
           // Re-point Runner to new project
-          this.db.close();
           this.config.projectDir = result.projectDir;
-          this.config.dbPath = result.dbPath;
-          this.db = new Database(result.dbPath);
-          this.db.init();
-          this.git = new GitManager(this.config);
+          this.swapDatabase(result.dbPath);
 
           let taskCount = 0;
           if (effectivePlan) {
@@ -1268,12 +1281,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
         this.creatingProject = projectName;
         try {
           // Re-point Runner to the retry project (same pattern as project:create).
-          this.db.close();
           this.config.projectDir = resolvedDir;
-          this.config.dbPath = dbPath;
-          this.db = new Database(dbPath);
-          this.db.init();
-          this.git = new GitManager(this.config);
+          this.swapDatabase(dbPath);
 
           // Refuse retry if tasks already exist — agentParsePlan would otherwise
           // double-insert. User must clear the project manually to re-parse.
@@ -1465,12 +1474,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
         this.creatingProject = projectName;
         try {
-          this.db.close();
           this.config.projectDir = resolvedDir;
-          this.config.dbPath = dbPath;
-          this.db = new Database(dbPath);
-          this.db.init();
-          this.git = new GitManager(this.config);
+          this.swapDatabase(dbPath);
 
           const existingTasks = this.db.getAllTasks();
           if (existingTasks.length > 0) {
@@ -1635,12 +1640,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
         this.creatingProject = projectName;
         try {
-          this.db.close();
           this.config.projectDir = resolvedDir;
-          this.config.dbPath = dbPath;
-          this.db = new Database(dbPath);
-          this.db.init();
-          this.git = new GitManager(this.config);
+          this.swapDatabase(dbPath);
 
           const existingTasks = this.db.getAllTasks();
           if (existingTasks.length > 0) {
