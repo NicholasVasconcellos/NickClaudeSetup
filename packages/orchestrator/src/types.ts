@@ -242,7 +242,8 @@ export type WSEventFromClient =
   | { type: "project:create_log_tail"; projectDir: string }
   | { type: "project:retry_parse"; projectDir: string }
   | { type: "project:resume_parse"; projectDir: string }
-  | { type: "project:load_tasks"; projectDir: string };
+  | { type: "project:load_tasks"; projectDir: string }
+  | { type: "project:open"; projectDir: string };
 
 // ── Configuration ────────────────────────────────────────────
 

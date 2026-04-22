@@ -33,6 +33,22 @@ import type {
 } from "./types.js";
 import { MODEL_CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT } from "./types.js";
 
+function extractAssistantText(stdout: string): string {
+  if (!stdout.trim()) return "";
+  const lines = stdout.split("\n").filter((l) => l.trim().startsWith("{"));
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]) as { type?: string; result?: string };
+      if (typeof parsed.result === "string" && parsed.result.length > 0) {
+        return parsed.result;
+      }
+    } catch {
+      // skip
+    }
+  }
+  return "";
+}
+
 // ── Runner ────────────────────────────────────────────────────
 
 export class Runner {
@@ -98,6 +114,7 @@ export class Runner {
     this.stateMachine.setDb(this.db);
     this.learning.setDb(this.db);
     this.git = new GitManager(this.config);
+    this.events.setProjectDir(this.config.projectDir);
   }
 
   // ── init ──────────────────────────────────────────────────
@@ -117,6 +134,7 @@ export class Runner {
     }
 
     // Start the WebSocket server
+    this.events.setProjectDir(this.config.projectDir);
     this.events.start();
 
     // Register event handlers for dashboard commands
@@ -960,6 +978,28 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
         break;
       }
 
+      case "prompt:submit": {
+        const { taskId, prompt } = event;
+        try {
+          const model = this.config.models.planning ?? this.config.models.execute;
+          const result = await this.claude.runTask({
+            prompt,
+            cwd: this.config.projectDir,
+            model,
+            effort: "medium",
+            timeout: 5 * 60 * 1000,
+          });
+          const text = extractAssistantText(result.stdout) || result.stderr || "(no response)";
+          this.events.promptResponse(taskId, text);
+          console.log(`[runner] prompt:submit task=${taskId} responded (${text.length} chars, $${result.cost.toFixed(4)})`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.promptResponse(taskId, `Error: ${msg}`);
+          console.error(`[runner] prompt:submit failed:`, err);
+        }
+        break;
+      }
+
       case "plan:load": {
         const { markdown } = event as { type: "plan:load"; markdown: string };
         try {
@@ -1716,6 +1756,55 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           console.error("[runner] project:load_tasks failed:", err);
         } finally {
           this.creatingProject = null;
+        }
+        break;
+      }
+
+      case "project:open": {
+        const { projectDir } = event as { type: "project:open"; projectDir: string };
+        const resolvedDir = projectDir.startsWith("~")
+          ? path.join(os.homedir(), projectDir.slice(1))
+          : path.resolve(projectDir);
+        const projectName = path.basename(resolvedDir);
+
+        if (this.creatingProject) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "concurrent",
+            error: `Another project creation is already in progress (${this.creatingProject}). Wait for it to finish.`,
+          });
+          break;
+        }
+
+        const dbPath = path.join(resolvedDir, ".orchestrator/orchestrator.db");
+        if (!fs.existsSync(dbPath)) {
+          this.events.broadcast({
+            type: "project:create_error",
+            kind: "scaffold",
+            error: `No orchestrator DB at ${dbPath}. Project must be scaffolded first.`,
+            projectDir: resolvedDir,
+          });
+          break;
+        }
+
+        try {
+          this.config.projectDir = resolvedDir;
+          this.swapDatabase(dbPath);
+
+          const tasks = this.db.getAllTasks();
+          for (const task of tasks) {
+            this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
+            if (task.state !== "pending") {
+              this.events.taskStateChanged(task.id, "pending", task.state, task.title);
+            }
+          }
+          this.events.planLoaded(tasks.length);
+          this.events.broadcast({ type: "project:info", name: projectName, dir: resolvedDir });
+          console.log(`[runner] opened project: ${resolvedDir} (${tasks.length} tasks)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.events.broadcast({ type: "project:create_error", kind: "unknown", error: msg, projectDir: resolvedDir });
+          console.error("[runner] project:open failed:", err);
         }
         break;
       }

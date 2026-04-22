@@ -158,13 +158,13 @@ export default function Controls({ selectedTaskId, onCommand, paused, runActive,
         {paused ? (
           <ControlButton
             label="Resume All"
-            onClick={() => onCommand({ type: "command:resume_all" })}
+            onClick={() => onCommand({ type: "run:resume_all" })}
             color="var(--success)"
           />
         ) : (
           <ControlButton
             label="Pause All"
-            onClick={() => onCommand({ type: "command:pause_all" })}
+            onClick={() => onCommand({ type: "run:pause_all" })}
             color="var(--warning)"
           />
         )}
@@ -202,28 +202,28 @@ export default function Controls({ selectedTaskId, onCommand, paused, runActive,
             <ControlButton
               label="Pause"
               onClick={() =>
-                onCommand({ type: "command:pause_task", taskId: selectedTaskId })
+                onCommand({ type: "task:pause", taskId: selectedTaskId })
               }
               color="var(--warning)"
             />
             <ControlButton
               label="Resume"
               onClick={() =>
-                onCommand({ type: "command:resume_task", taskId: selectedTaskId })
+                onCommand({ type: "task:resume", taskId: selectedTaskId })
               }
               color="var(--success)"
             />
             <ControlButton
               label="Retry"
               onClick={() =>
-                onCommand({ type: "command:retry_task", taskId: selectedTaskId })
+                onCommand({ type: "task:retry", taskId: selectedTaskId })
               }
               color="var(--accent)"
             />
             <ControlButton
               label="Skip"
               onClick={() =>
-                onCommand({ type: "command:skip_task", taskId: selectedTaskId })
+                onCommand({ type: "task:skip", taskId: selectedTaskId })
               }
               color="var(--text-muted)"
             />

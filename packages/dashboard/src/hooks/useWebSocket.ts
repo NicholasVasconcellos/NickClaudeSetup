@@ -135,12 +135,13 @@ interface RunSummary {
 }
 
 type WSEventFromClient =
-  | { type: "command:pause_all" }
-  | { type: "command:resume_all" }
-  | { type: "command:pause_task"; taskId: number }
-  | { type: "command:resume_task"; taskId: number }
-  | { type: "command:retry_task"; taskId: number }
-  | { type: "command:skip_task"; taskId: number }
+  | { type: "run:pause_all" }
+  | { type: "run:resume_all" }
+  | { type: "task:pause"; taskId: number }
+  | { type: "task:resume"; taskId: number }
+  | { type: "task:retry"; taskId: number }
+  | { type: "task:skip"; taskId: number }
+  | { type: "task:approve"; taskId: number }
   | { type: "skills:list" }
   | { type: "skills:get"; skillName: string }
   | { type: "skills:save"; skillName: string; content: string }
@@ -156,7 +157,8 @@ type WSEventFromClient =
   | { type: "project:create_log_tail"; projectDir: string }
   | { type: "project:retry_parse"; projectDir: string }
   | { type: "project:resume_parse"; projectDir: string }
-  | { type: "project:load_tasks"; projectDir: string };
+  | { type: "project:load_tasks"; projectDir: string }
+  | { type: "project:open"; projectDir: string };
 
 export interface PhaseContextInfo {
   phase: string;

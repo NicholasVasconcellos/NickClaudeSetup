@@ -59,6 +59,10 @@ export default function DashboardPage() {
     sendCommand({ type: "project:load_tasks", projectDir });
   };
 
+  const handleOpenProject = (projectDir: string) => {
+    sendCommand({ type: "project:open", projectDir });
+  };
+
   const handleOpenInVSCode = () => {
     if (projectInfo?.dir) {
       window.open(`vscode://file/${encodeURIComponent(projectInfo.dir)}`);
@@ -75,12 +79,12 @@ export default function DashboardPage() {
     if (summary) setRunActive(false);
   }, [summary]);
 
-  // Request file tree on connection
+  // Request file tree on connection and whenever the active project changes
   useEffect(() => {
     if (connected) {
       sendCommand({ type: "files:tree" });
     }
-  }, [connected, sendCommand]);
+  }, [connected, projectInfo?.dir, sendCommand]);
 
   const taskGraphData = useMemo(() => {
     const data = new Map<number, { state: string; title?: string; description?: string; milestone?: string | null; dependsOn?: number[]; phase?: string; cost?: number; contextPercentage?: number }>();
@@ -192,8 +196,8 @@ export default function DashboardPage() {
   };
 
   const handleCommand = (cmd: { type: string; taskId?: number }) => {
-    if (cmd.type === "command:pause_all") setPaused(true);
-    if (cmd.type === "command:resume_all") setPaused(false);
+    if (cmd.type === "run:pause_all") setPaused(true);
+    if (cmd.type === "run:resume_all") setPaused(false);
     sendCommand(cmd as Parameters<typeof sendCommand>[0]);
   };
 
@@ -221,6 +225,7 @@ export default function DashboardPage() {
         onRetryParse={handleRetryParse}
         onResumeParse={handleResumeParse}
         onLoadTasks={handleLoadTasks}
+        onOpenProject={handleOpenProject}
         createError={projectError}
         createState={projectCreateState}
       />

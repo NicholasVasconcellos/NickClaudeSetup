@@ -34,13 +34,31 @@ shows "Ready" after CLI ingestion. `sessionId: null` since no agent ran.
 
 ## packages/orchestrator/src/runner.ts
 
-**`project:load_tasks` and `project:resume_parse` handlers** open the
-target project's DB locally — they must NOT re-point `this.db` or
-`this.config.projectDir` (those belong to the active runner's working
-project and would corrupt the currently-running execution state).
+**Project-switch handlers (`project:create`, `project:load_tasks`,
+`project:resume_parse`, `project:open`)** all repoint the runner at the
+target project: set `this.config.projectDir` then call `swapDatabase()`.
+`swapDatabase()` also pushes the new dir into `EventBus.setProjectDir()`
+so `files:tree` queries reflect the active project. Don't run any of these
+mid-execution — there's no guard against in-flight task work, only against
+concurrent project-create operations.
 
-**Single-flight guard `this.creatingProject`** — reused for both load +
-resume so the user can't fire a second creation while one is in flight.
+**Single-flight guard `this.creatingProject`** — reused for create / load /
+resume / open so the user can't fire a second project-switch while one is
+in flight.
+
+**`project:open`** — the "activate an existing scaffolded project that
+already has tasks in DB" path. Distinct from `project:load_tasks` (which
+seeds the DB from `tasks.json` and refuses if tasks already exist). Open
+just swaps DB + replays `task:init` for each existing task so the dashboard
+graph rebuilds.
+
+**`prompt:submit` (Planning Chat / InlinePrompt)** — single-shot
+`ClaudeRunner.runTask` against `this.config.projectDir` using the
+`models.planning` model. v1 ignores `threadMode` (no session resume —
+`extractAssistantText` reads only the terminal `result` envelope from
+stream-json stdout). For per-task chat, all prompts run against projectDir
+not the task's worktree (worktree isolation isn't needed for read-only
+chat).
 
 ## packages/dashboard/src/components/ProjectSetup.tsx
 

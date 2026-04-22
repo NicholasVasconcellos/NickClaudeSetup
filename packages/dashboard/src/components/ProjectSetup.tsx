@@ -130,6 +130,7 @@ interface ProjectSetupProps {
   onRetryParse: (projectDir: string) => void;
   onResumeParse: (projectDir: string) => void;
   onLoadTasks: (projectDir: string) => void;
+  onOpenProject: (projectDir: string) => void;
   createError: string | null;
   createState: ProjectCreateState;
 }
@@ -196,6 +197,7 @@ export default function ProjectSetup({
   onRetryParse,
   onResumeParse,
   onLoadTasks,
+  onOpenProject,
   createError,
   createState,
 }: ProjectSetupProps) {
@@ -813,8 +815,9 @@ export default function ProjectSetup({
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {projectList.map((project) => {
                       const badge = getParseStatusBadge(project);
+                      const canOpen = project.taskCount > 0;
                       return (
-                        <button
+                        <div
                           key={project.path}
                           onClick={() => onTailLog(project.path)}
                           onMouseEnter={() => setHovered(`proj-${project.path}`)}
@@ -872,15 +875,37 @@ export default function ProjectSetup({
                               {project.path}
                             </div>
                           </div>
-                          <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
-                            <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                              {project.taskCount} task{project.taskCount !== 1 ? "s" : ""}
+                          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, marginLeft: 16 }}>
+                            <div style={{ textAlign: "right" }}>
+                              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                                {project.taskCount} task{project.taskCount !== 1 ? "s" : ""}
+                              </div>
+                              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                {formatDate(project.lastModified)}
+                              </div>
                             </div>
-                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                              {formatDate(project.lastModified)}
-                            </div>
+                            {canOpen && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenProject(project.path);
+                                }}
+                                style={{
+                                  backgroundColor: "var(--accent)",
+                                  color: "#fff",
+                                  border: "none",
+                                  borderRadius: 6,
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Open
+                              </button>
+                            )}
                           </div>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>

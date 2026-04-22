@@ -28,9 +28,15 @@ export class EventBus {
   private onClientMessage: ((event: WSEventFromClient) => void) | null = null;
   private initBuffer: WSEventFromServer[] = [];
   private skillsDir: string;
+  private projectDir: string;
 
   constructor(private readonly port: number) {
     this.skillsDir = path.resolve(process.cwd(), ".claude", "skills");
+    this.projectDir = process.cwd();
+  }
+
+  setProjectDir(dir: string): void {
+    this.projectDir = dir;
   }
 
   start(): void {
@@ -237,7 +243,7 @@ export class EventBus {
     for (const entry of entries) {
       if (EXCLUDED_NAMES.has(entry.name)) continue;
       const fullPath = path.join(dirPath, entry.name);
-      const relPath = path.relative(process.cwd(), fullPath);
+      const relPath = path.relative(this.projectDir, fullPath);
       if (entry.isDirectory()) {
         const children = this.buildTree(fullPath, depth + 1);
         nodes.push({ path: relPath, name: entry.name, type: "directory", children });
@@ -254,7 +260,7 @@ export class EventBus {
 
   private handleFilesTree(ws: WebSocket): void {
     try {
-      const tree = this.buildTree(process.cwd(), 1);
+      const tree = this.buildTree(this.projectDir, 1);
       ws.send(JSON.stringify({ type: "files:tree_result", tree }));
     } catch (err) {
       console.error("[ws] files:tree error:", err);
