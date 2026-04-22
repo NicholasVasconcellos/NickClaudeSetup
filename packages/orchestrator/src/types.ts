@@ -248,7 +248,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   mainBranch: "main",
   models: {
     spec: "claude-sonnet-4-6",
-    planning: "claude-opus-4-7",
+    planning: "claude-opus-4-7[1m]",
     execute: "claude-sonnet-4-6",
     review: "claude-sonnet-4-6",
     document: "claude-sonnet-4-6",
