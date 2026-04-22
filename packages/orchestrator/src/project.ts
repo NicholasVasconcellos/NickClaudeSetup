@@ -60,6 +60,21 @@ function getSkillsDir(): string {
   return path.join(getRepoRoot(), ".claude", "skills");
 }
 
+/**
+ * Reads the project-local SKILL.md body for a given skill, stripping YAML
+ * frontmatter. Claude Code headless mode (`-p`) does not load project-level
+ * skills or parse slash commands, so the body must be inlined into the prompt.
+ * Returns empty string if the skill file is missing.
+ */
+export function loadSkillBody(projectDir: string, skillName: string): string {
+  const skillPath = path.join(projectDir, ".claude", "skills", skillName, "SKILL.md");
+  if (!fs.existsSync(skillPath)) return "";
+  const raw = fs.readFileSync(skillPath, "utf-8");
+  // Strip leading YAML frontmatter delimited by --- ... ---
+  const match = raw.match(/^---\n[\s\S]*?\n---\n?/);
+  return (match ? raw.slice(match[0].length) : raw).trimStart();
+}
+
 function interpolateTemplate(template: string, vars: Record<string, string>): string {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
@@ -414,8 +429,15 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     signal,
   } = options;
 
-  // Build prompt: /get-tasks skill invocation + full plan content
-  const prompt = `/get-tasks\n\n${planContent}`;
+  // inlining skill into body (slash doesn't work in invocation)
+  const skillBody = loadSkillBody(projectDir, "get-tasks");
+  if (!skillBody) {
+    throw new Error(
+      `get-tasks skill not found at ${projectDir}/.claude/skills/get-tasks/SKILL.md — ` +
+      `scaffold did not copy skills correctly.`,
+    );
+  }
+  const prompt = `${skillBody}\n\n---\n\n## Plan\n\n${planContent}`;
 
   const running: ParsePlanUsage = { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
 
@@ -461,8 +483,8 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     };
   }
 
-  // The /get-tasks skill writes tasks/tasks.json to projectDir. That file is
-  // the contract — agent stdout is no longer parsed for task data.
+  // The get-tasks skill instructs the agent to write tasks/tasks.json to
+  // projectDir. That file is the contract — agent stdout is not parsed.
   let taskDefs: AgentTaskDef[];
   try {
     taskDefs = await loadTaskDefs(projectDir);

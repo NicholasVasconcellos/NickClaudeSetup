@@ -4,7 +4,7 @@ import os from "node:os";
 
 import { Database } from "./db.js";
 import { GitManager } from "./git.js";
-import { parsePlanToTasks, scaffoldProject, listProjects, agentParsePlan } from "./project.js";
+import { parsePlanToTasks, scaffoldProject, listProjects, agentParsePlan, loadSkillBody } from "./project.js";
 import { ClaudeRunner } from "./claude.js";
 import { StateMachine } from "./state-machine.js";
 import { EventBus } from "./ws-server.js";
@@ -704,10 +704,11 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
       ? `\n\n## Dependency files\n${files.map(f => `@${f}`).join(" ")}`
       : "";
 
-    // Invoke the corresponding skill for spec/execute/review/document; merge has no skill
-    const skillInvocation = phase !== "merge" ? `/${phase}\n\n` : "";
+    // Inline the phase skill (slash command doesn't work), merge phase has no skill.
+    const skillBody = phase !== "merge" ? loadSkillBody(this.config.projectDir, phase) : "";
+    const skillSection = skillBody ? `${skillBody}\n\n---\n\n` : "";
 
-    return `${skillInvocation}${taskSection}${depTitleSection}${ctxFileRefs}${depFileRefs}`;
+    return `${skillSection}${taskSection}${depTitleSection}${ctxFileRefs}${depFileRefs}`;
   }
 
   // ── waitForApproval ──────────────────────────────────────
