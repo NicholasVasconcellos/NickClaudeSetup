@@ -26,6 +26,19 @@ export type TaskPhase = "spec" | "execute" | "review" | "document" | "merge";
 
 export type TaskEffort = "low" | "medium" | "high" | "max";
 
+// ── Plan Parsing (agent → orchestrator contract) ────────────
+
+export interface AgentTaskDef {
+  title: string;
+  description: string;
+  dependsOn: string[];
+  contextFiles?: string[];
+}
+
+export interface TasksFile {
+  tasks: AgentTaskDef[];
+}
+
 // ── Core Entities ────────────────────────────────────────────
 
 export interface Task {
@@ -35,6 +48,7 @@ export interface Task {
   dependsOn: number[];
   effort: TaskEffort | null;
   filesChanged: string[];
+  contextFiles: string[];
   state: TaskState;
   phase: TaskPhase | null;
   milestone: string | null;
@@ -53,6 +67,7 @@ export interface TaskRow {
   depends_on: string; // JSON array
   effort: string | null;
   files_changed: string; // JSON array
+  context_files: string; // JSON array
   state: TaskState;
   phase: TaskPhase | null;
   milestone: string | null;

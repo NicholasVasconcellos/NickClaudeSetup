@@ -32,6 +32,7 @@ function taskRowToTask(row: TaskRow): Task {
     dependsOn: JSON.parse(row.depends_on) as number[],
     effort: (row.effort as TaskEffort) ?? null,
     filesChanged: JSON.parse(row.files_changed) as string[],
+    contextFiles: row.context_files ? (JSON.parse(row.context_files) as string[]) : [],
     state: row.state,
     phase: row.phase,
     milestone: row.milestone,
@@ -95,6 +96,7 @@ export class Database {
         depends_on TEXT NOT NULL DEFAULT '[]',
         effort TEXT,
         files_changed TEXT NOT NULL DEFAULT '[]',
+        context_files TEXT NOT NULL DEFAULT '[]',
         state TEXT NOT NULL DEFAULT 'pending',
         phase TEXT,
         milestone TEXT,
@@ -160,6 +162,7 @@ export class Database {
     const migrations = [
       "ALTER TABLE tasks ADD COLUMN effort TEXT",
       "ALTER TABLE tasks ADD COLUMN files_changed TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE tasks ADD COLUMN context_files TEXT NOT NULL DEFAULT '[]'",
     ];
     for (const sql of migrations) {
       try { this.db.exec(sql); } catch { /* column already exists */ }
@@ -174,10 +177,11 @@ export class Database {
     dependsOn: number[],
     milestone?: string,
     effort?: TaskEffort | null,
+    contextFiles?: string[],
   ): Task {
     const stmt = this.db.prepare(`
-      INSERT INTO tasks (title, description, depends_on, milestone, effort)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO tasks (title, description, depends_on, milestone, effort, context_files)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     const info = stmt.run(
       title,
@@ -185,6 +189,7 @@ export class Database {
       JSON.stringify(dependsOn),
       milestone ?? null,
       effort ?? null,
+      JSON.stringify(contextFiles ?? []),
     );
     return this.getTask(info.lastInsertRowid as number) as Task;
   }

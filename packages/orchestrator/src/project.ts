@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { Database } from "./db.js";
 import { validateDAG } from "./dag.js";
-import type { Task, TaskEffort } from "./types.js";
+import type { AgentTaskDef, Task, TaskEffort } from "./types.js";
 import { ClaudeRunner } from "./claude.js";
 
 // ── Types ────────────────────────────────────────────────────
@@ -446,15 +446,17 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     };
   }
 
-  // Extract the task JSON from agent output
-  const resultText = extractResultText(result.stdout);
-  const taskDefs = extractTaskDefs(resultText);
-
-  if (!taskDefs) {
+  // The /get-tasks skill writes tasks/tasks.json to projectDir. That file is
+  // the contract — agent stdout is no longer parsed for task data.
+  let taskDefs: AgentTaskDef[];
+  try {
+    taskDefs = await loadTaskDefs(projectDir);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     return {
       taskCount: 0,
       tasks: [],
-      errors: ["Agent did not produce valid JSON task output. Raw output saved to logs."],
+      errors: [msg],
       usage: finalUsage,
       model,
     };
@@ -465,7 +467,7 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
   const titleToId = new Map<string, number>();
 
   for (const def of taskDefs) {
-    const task = db.createTask(def.title, def.description, []);
+    const task = db.createTask(def.title, def.description, [], undefined, undefined, def.contextFiles);
     createdTasks.push(task);
     titleToId.set(def.title, task.id);
   }
@@ -500,77 +502,67 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
   return { taskCount: createdTasks.length, tasks: createdTasks, errors, usage: finalUsage, model };
 }
 
-// ── Output parsing helpers ────────────────────────────────────
+// ── tasks.json loader ────────────────────────────────────────
 
-function extractResultText(stdout: string): string {
-  // Claude CLI outputs JSON lines. Find the one with a "result" field.
-  const lines = stdout.split("\n").filter((l) => l.trim().startsWith("{"));
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (typeof parsed.result === "string") return parsed.result;
-    } catch {
-      /* skip */
-    }
-  }
-  // Fallback: try the whole output as a single JSON blob
+const TASKS_FILE_RELATIVE = path.join("tasks", "tasks.json");
+
+async function loadTaskDefs(projectDir: string): Promise<AgentTaskDef[]> {
+  const tasksPath = path.join(projectDir, TASKS_FILE_RELATIVE);
+
+  let raw: string;
   try {
-    const parsed = JSON.parse(stdout.trim());
-    if (typeof parsed.result === "string") return parsed.result;
-  } catch {
-    /* skip */
+    raw = await fs.promises.readFile(tasksPath, "utf8");
+  } catch (err: any) {
+    if (err?.code === "ENOENT") {
+      throw new Error(
+        `Plan parser did not produce ${TASKS_FILE_RELATIVE}. Expected at: ${tasksPath}`,
+      );
+    }
+    throw new Error(`Failed to read ${tasksPath}: ${err?.message ?? err}`);
   }
-  return stdout;
-}
 
-interface AgentTaskDef {
-  title: string;
-  description: string;
-  dependsOn: string[];
-}
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`${tasksPath} is not valid JSON: ${msg}`);
+  }
 
-function extractTaskDefs(text: string): AgentTaskDef[] | null {
-  // The agent outputs raw JSON: { "tasks": [...] }
-  // It might be embedded in surrounding text, so find the JSON object
-  const patterns = [
-    // Direct JSON object
-    /\{\s*"tasks"\s*:\s*\[[\s\S]*?\]\s*\}/,
-    // Inside a code block
-    /```(?:json)?\s*(\{\s*"tasks"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/,
-  ];
+  if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as any).tasks)) {
+    throw new Error(`${tasksPath} must be { "tasks": [...] } — got ${typeof parsed}`);
+  }
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      try {
-        const jsonStr = match[1] ?? match[0];
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed.tasks)) {
-          return parsed.tasks.map((t: any) => ({
-            title: String(t.title ?? ""),
-            description: String(t.description ?? ""),
-            dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String) : [],
-          }));
-        }
-      } catch {
-        continue;
+  const out: AgentTaskDef[] = [];
+  const rawTasks = (parsed as { tasks: unknown[] }).tasks;
+  for (let i = 0; i < rawTasks.length; i++) {
+    const t = rawTasks[i] as any;
+    const where = `tasks[${i}]`;
+    if (!t || typeof t !== "object") {
+      throw new Error(`${where} is not an object`);
+    }
+    if (typeof t.title !== "string" || t.title.length === 0) {
+      throw new Error(`${where}.title must be a non-empty string`);
+    }
+    if (typeof t.description !== "string") {
+      throw new Error(`${where}.description must be a string`);
+    }
+    if (!Array.isArray(t.dependsOn) || !t.dependsOn.every((d: unknown) => typeof d === "string")) {
+      throw new Error(`${where}.dependsOn must be string[]`);
+    }
+    let contextFiles: string[] | undefined;
+    if (t.contextFiles !== undefined) {
+      if (!Array.isArray(t.contextFiles) || !t.contextFiles.every((f: unknown) => typeof f === "string")) {
+        throw new Error(`${where}.contextFiles must be string[] when present`);
       }
+      contextFiles = t.contextFiles;
     }
+    out.push({
+      title: t.title,
+      description: t.description,
+      dependsOn: t.dependsOn,
+      ...(contextFiles ? { contextFiles } : {}),
+    });
   }
-
-  // Last resort: try parsing the entire text as JSON
-  try {
-    const parsed = JSON.parse(text.trim());
-    if (Array.isArray(parsed.tasks)) {
-      return parsed.tasks.map((t: any) => ({
-        title: String(t.title ?? ""),
-        description: String(t.description ?? ""),
-        dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String) : [],
-      }));
-    }
-  } catch {
-    /* skip */
-  }
-
-  return null;
+  return out;
 }
