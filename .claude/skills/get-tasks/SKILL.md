@@ -17,13 +17,13 @@ Read all provided inputs before doing anything else.
 
 ## Step 1 — Generate or update CODEBASE.md (subagent)
 
-Spawn a subagent to generate or update `CODEBASE.md`. instruct subagent to:
+Spawn a subagent to generate or update `CODEBASE.md`. Instruct the subagent to:
 
-- Create `CODEBASE.md` if not existing.
-- Will serve a map file for agent reducing the need to scan the whole codebae, overall map of the codebase with hierarchical structure. Based on the specification of the plan document.
-- Contains coding, style, guidelines and conventions consistent troughout the codebase. Based on the specific plan and libraries / stack used.
-- Any addiontal High level information that should be avaialbe project wide for subsequent agents working on new features.
-- Ensure it is as consise as possible with only meaningfull information as briefly as possible to minimze context consumption.
+- Create `CODEBASE.md` if it does not exist.
+- Serve as a map file for agents, reducing the need to scan the whole codebase. Hierarchical overall structure, derived from the plan document.
+- Contain coding style, guidelines, and conventions consistent throughout the codebase, based on the plan and the libraries / stack used.
+- Include any additional high-level information that should be available project-wide for subsequent agents working on new features.
+- Be as concise as possible — only meaningful information, kept brief to minimize context consumption.
 
 CODEBASE.md must be:
 - Hierarchical: reflect the actual directory tree
@@ -62,14 +62,13 @@ Decompose the work into a flat list of tasks. Each task should read as if a proj
 - **Concrete**: specific about the expected outcome — what it looks like when done, what it produces, what changes in the codebase
 - **Scoped**: one logical unit of work, implementable in a single session
 
-Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task to keep the list short. There is no upper or lower limit on task count — decompose until every task is a single coherent unit of work and the tasks fufill the scope of the project no matter how large or small.
+Walk down every branch of the design tree. Do not stop early because a list feels long. Do not merge distinct concerns into one task to keep the list short. There is no upper or lower limit on task count — decompose until every task is a single coherent unit of work and the tasks fulfill the scope of the project, no matter how large or small.
 
-For each task, list what other task or tasks it depends on (by title), list which other task should be done before it can start.
+For each task, list which other tasks (by title) must complete directly before this one so that it can start.
 
 ## Step 4 — Output
 
-Output the tasks single JSON object. 
-Create `/tasks/tasks.json` in root with the raw json. 
+**Write `tasks/tasks.json` (relative to the project root). Do not also paste the JSON into your final message.**
 
 Schema:
 ```json
@@ -78,7 +77,7 @@ Schema:
     {
       "title": "string",
       "description": "string — what to build, how it fits into the project, and what the expected outcome looks like",
-      "contextFiles": ["path to file1", "path to file 2", "..."],
+      "contextFiles": ["path/to/file1", "path/to/file2"],
       "dependsOn": ["task title", "..."]
     }
   ]
@@ -86,9 +85,12 @@ Schema:
 ```
 
 Rules for the JSON output:
-- `title`: unique across all tasks
-- `description`: full deatiled, self-contained, written as a PM handoff to a senior engineer, with full context about the feature, how it fits into the project, and what done looks like
-- `dependsOn` references `title` strings exactly as written; use `[]` if there are no dependencies. only list direct dependencies, should follow naturally from the logical flow of creating the task list.
+- `title`: unique across all tasks (used as the dependency identifier)
+- `description`: full, detailed, self-contained, written as a PM handoff to a senior engineer — full context about the feature, how it fits into the project, and what done looks like
+- `contextFiles`: paths to existing files the implementing agent should read for context before starting. Omit or pass `[]` if none
+- `dependsOn`: references `title` strings exactly as written; use `[]` if there are no dependencies. Only list direct dependencies — they should follow naturally from the logical flow of the task list
+
+After writing the file, validate it parses as JSON before finishing your turn.
 
 
 ## Step 5 — Post-output checklist
@@ -104,7 +106,8 @@ List every action the user must take manually before execution can begin — API
 ## What NOT to do
 
 - Do not write any code.
-- Do not create any files other than CODEBASE.md.
-- Do not ask clarifying questions unless there are blocking unknowns identified in Step 3.
+- Do not create any files other than `CODEBASE.md`, the `docs/` directory, and `tasks/tasks.json`.
+- Do not ask clarifying questions unless there are blocking unknowns.
 - Do not pad the task list with generic tasks like "write tests" or "add logging" — testing is handled by a dedicated spec phase; logging is part of implementation.
 - Do not invent constraints that are not in the inputs.
+- Do not paste the tasks JSON into your final message — write `tasks/tasks.json` and reference it.
