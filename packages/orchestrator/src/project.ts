@@ -17,6 +17,8 @@ export interface ScaffoldOptions {
   testCommand?: string;
   architectureNotes?: string;
   dependencyNotes?: string;
+  /** If provided, written verbatim to plan.md. Otherwise a stub plan is written. */
+  planMarkdown?: string;
 }
 
 export interface ProjectScaffoldResult {
@@ -25,10 +27,21 @@ export interface ProjectScaffoldResult {
   planPath: string;
 }
 
+export interface ParsePlanUsage {
+  tokensIn: number;
+  tokensOut: number;
+  cost: number;
+  /** Number of distinct sub-agent Task tool invocations observed in the stream. */
+  subagentCount: number;
+}
+
 export interface ParsePlanResult {
   taskCount: number;
   tasks: Task[];
   errors: string[];
+  /** Usage metrics from agent-based parsing; omitted by the deterministic parsePlanToTasks path. */
+  usage?: ParsePlanUsage;
+  model?: string;
 }
 
 // ── Template Resolution ──────────────────────────────────────
@@ -106,28 +119,28 @@ export function scaffoldProject(options: ScaffoldOptions): ProjectScaffoldResult
   });
   fs.writeFileSync(path.join(projectDir, "CLAUDE.md"), claudeMd);
 
-  // plan.md skeleton
-  fs.writeFileSync(
-    path.join(projectDir, "plan.md"),
-    [
-      "# Project Plan",
-      "",
-      "<!-- Format: h2 = milestone (optional), h3 = task title -->",
-      "<!-- Dependencies: add 'depends on: #1, #3' in the task description -->",
-      "<!-- where #N refers to the Nth task in this plan (1-indexed) -->",
-      "",
-      "## Milestone 1",
-      "",
-      "### Task 1: Example task",
-      "",
-      "Description of what this task should accomplish.",
-      "",
-      "### Task 2: Another task",
-      "",
-      "Description here. Depends on: #1",
-      "",
-    ].join("\n"),
-  );
+  // plan.md: pasted/provided content verbatim, or stub skeleton
+  const planBody = options.planMarkdown?.trim()
+    ? (options.planMarkdown.endsWith("\n") ? options.planMarkdown : options.planMarkdown + "\n")
+    : [
+        "# Project Plan",
+        "",
+        "<!-- Format: h2 = milestone (optional), h3 = task title -->",
+        "<!-- Dependencies: add 'depends on: #1, #3' in the task description -->",
+        "<!-- where #N refers to the Nth task in this plan (1-indexed) -->",
+        "",
+        "## Milestone 1",
+        "",
+        "### Task 1: Example task",
+        "",
+        "Description of what this task should accomplish.",
+        "",
+        "### Task 2: Another task",
+        "",
+        "Description here. Depends on: #1",
+        "",
+      ].join("\n");
+  fs.writeFileSync(path.join(projectDir, "plan.md"), planBody);
 
   // Initialize SQLite DB
   const dbPath = path.join(projectDir, ".orchestrator/orchestrator.db");
@@ -304,7 +317,67 @@ export interface AgentParsePlanOptions {
   effort?: TaskEffort;
   timeout?: number;
   onOutput?: (line: string) => void;
+  /** Fires whenever a stream-json line carries cumulative usage/cost info. */
+  onUsage?: (usage: ParsePlanUsage) => void;
   signal?: AbortSignal;
+}
+
+// Running totals extracted from a single stream-json line.
+interface StreamUsageTick {
+  tokensIn?: number;
+  tokensOut?: number;
+  cost?: number;
+  isSubagentStart?: boolean;
+}
+
+function parseUsageFromLine(line: string): StreamUsageTick | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return null;
+  let msg: any;
+  try {
+    msg = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+
+  const tick: StreamUsageTick = {};
+  let hit = false;
+
+  // Subagent spawn: assistant tool_use with name="Task"
+  if (msg.type === "assistant" && Array.isArray(msg.message?.content)) {
+    for (const block of msg.message.content) {
+      if (block?.type === "tool_use" && block.name === "Task") {
+        tick.isSubagentStart = true;
+        hit = true;
+      }
+    }
+  }
+
+  // Per-message usage (assistant messages include a `usage` block)
+  const u = msg.message?.usage ?? msg.usage;
+  if (u && typeof u === "object") {
+    const input =
+      (u.input_tokens ?? 0) +
+      (u.cache_read_input_tokens ?? 0) +
+      (u.cache_creation_input_tokens ?? 0);
+    if (input > 0) {
+      tick.tokensIn = input;
+      hit = true;
+    }
+    if (typeof u.output_tokens === "number" && u.output_tokens > 0) {
+      tick.tokensOut = u.output_tokens;
+      hit = true;
+    }
+  }
+
+  // Terminal result envelope
+  const finalCost = msg.total_cost_usd ?? msg.cost_usd ?? msg.costUSD;
+  if (typeof finalCost === "number" && finalCost > 0) {
+    tick.cost = finalCost;
+    hit = true;
+  }
+
+  return hit ? tick : null;
 }
 
 /**
@@ -322,11 +395,14 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     effort = "max",
     timeout = 10 * 60 * 1000,
     onOutput,
+    onUsage,
     signal,
   } = options;
 
   // Build prompt: /get-tasks skill invocation + full plan content
   const prompt = `/get-tasks\n\n${planContent}`;
+
+  const running: ParsePlanUsage = { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
 
   const result = await claude.runTask({
     prompt,
@@ -334,15 +410,39 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     model,
     effort,
     timeout,
-    onOutput,
     signal,
+    onOutput: (line) => {
+      onOutput?.(line);
+      if (!onUsage) return;
+      const tick = parseUsageFromLine(line);
+      if (!tick) return;
+      // Per-message usage reflects that turn's context pressure (input = full re-sent
+      // transcript; output = just that assistant reply). Track max for both to match how
+      // the task dashboard computes the gauge (last-turn in + last-turn out).
+      if (tick.tokensIn !== undefined && tick.tokensIn > running.tokensIn) running.tokensIn = tick.tokensIn;
+      if (tick.tokensOut !== undefined && tick.tokensOut > running.tokensOut) running.tokensOut = tick.tokensOut;
+      if (tick.cost !== undefined && tick.cost > running.cost) running.cost = tick.cost;
+      if (tick.isSubagentStart) running.subagentCount += 1;
+      onUsage({ ...running });
+    },
   });
+
+  // Peak per-turn pressure for both in and out (matches task-dashboard semantics).
+  // result.{tokensIn,tokensOut} are last-turn values from parseCostFromOutput.
+  const finalUsage: ParsePlanUsage = {
+    tokensIn: Math.max(result.tokensIn, running.tokensIn),
+    tokensOut: Math.max(result.tokensOut, running.tokensOut),
+    cost: result.cost || running.cost,
+    subagentCount: running.subagentCount,
+  };
 
   if (result.exitCode !== 0) {
     return {
       taskCount: 0,
       tasks: [],
       errors: [`Agent failed (exit ${result.exitCode}): ${result.stderr}`],
+      usage: finalUsage,
+      model,
     };
   }
 
@@ -355,6 +455,8 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
       taskCount: 0,
       tasks: [],
       errors: ["Agent did not produce valid JSON task output. Raw output saved to logs."],
+      usage: finalUsage,
+      model,
     };
   }
 
@@ -395,7 +497,7 @@ export async function agentParsePlan(options: AgentParsePlanOptions): Promise<Pa
     errors.push(...dagResult.errors.map((e) => `DAG error: ${e}`));
   }
 
-  return { taskCount: createdTasks.length, tasks: createdTasks, errors };
+  return { taskCount: createdTasks.length, tasks: createdTasks, errors, usage: finalUsage, model };
 }
 
 // ── Output parsing helpers ────────────────────────────────────

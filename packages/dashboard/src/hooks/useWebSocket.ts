@@ -22,6 +22,19 @@ type TaskPhase = "spec" | "execute" | "review" | "document";
 export type ProjectCreateStage = "scaffolding" | "scaffolded" | "parsing_plan" | "plan_parsed" | "done";
 export type ProjectCreateErrorKind = "collision" | "plan_read" | "plan_parse" | "scaffold" | "concurrent" | "unknown";
 
+export interface PlanningAgentUsage {
+  model: string | null;
+  effort: string | null;
+  tokensIn: number;
+  tokensOut: number;
+  cost: number;
+  contextLimit: number;
+  contextPercentage: number;
+  subagentCount: number;
+  /** True between agent_started and agent_finished. */
+  live: boolean;
+}
+
 export interface ProjectCreateState {
   active: boolean;
   projectName: string | null;
@@ -31,6 +44,7 @@ export interface ProjectCreateState {
   events: StreamEvent[];
   taskCount: number;
   error: { message: string; kind?: ProjectCreateErrorKind; projectDir?: string } | null;
+  planningUsage: PlanningAgentUsage;
 }
 
 const MAX_CREATE_LOG_LINES = 2000;
@@ -59,6 +73,9 @@ type WSEventFromServer =
   | { type: "project:create_error"; error: string; kind?: ProjectCreateErrorKind; projectDir?: string }
   | { type: "project:create_progress"; stage: ProjectCreateStage; projectName: string; projectDir?: string; taskCount?: number; message?: string }
   | { type: "project:create_log"; projectName: string; line: string }
+  | { type: "project:create_agent_started"; projectName: string; model: string; effort: string }
+  | { type: "project:create_agent_usage"; projectName: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
+  | { type: "project:create_agent_finished"; projectName: string; model: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
   | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
   | { type: "project:info"; name: string; dir: string }
   | { type: "run:notification"; message: string; level: "info" | "warning" | "error" };
@@ -172,6 +189,18 @@ export interface WebSocketState {
   sendCommand: (event: WSEventFromClient) => void;
 }
 
+const initialPlanningUsage: PlanningAgentUsage = {
+  model: null,
+  effort: null,
+  tokensIn: 0,
+  tokensOut: 0,
+  cost: 0,
+  contextLimit: 200_000,
+  contextPercentage: 0,
+  subagentCount: 0,
+  live: false,
+};
+
 const initialCreateState: ProjectCreateState = {
   active: false,
   projectName: null,
@@ -181,6 +210,7 @@ const initialCreateState: ProjectCreateState = {
   events: [],
   taskCount: 0,
   error: null,
+  planningUsage: initialPlanningUsage,
 };
 
 export function useWebSocket(url: string): WebSocketState {
@@ -482,6 +512,7 @@ export function useWebSocket(url: string): WebSocketState {
             logs: isNewSession ? [] : prev.logs,
             events: isNewSession ? [] : prev.events,
             error: isNewSession ? null : prev.error,
+            planningUsage: isNewSession ? initialPlanningUsage : prev.planningUsage,
           };
         });
         break;
@@ -500,6 +531,54 @@ export function useWebSocket(url: string): WebSocketState {
           }
           return { ...prev, logs: nextLogs, events: nextEvents };
         });
+        break;
+      }
+
+      case "project:create_agent_started": {
+        setProjectCreateState((prev) => ({
+          ...prev,
+          projectName: data.projectName,
+          planningUsage: {
+            ...initialPlanningUsage,
+            model: data.model,
+            effort: data.effort,
+            live: true,
+          },
+        }));
+        break;
+      }
+
+      case "project:create_agent_usage": {
+        setProjectCreateState((prev) => ({
+          ...prev,
+          planningUsage: {
+            ...prev.planningUsage,
+            tokensIn: data.tokensIn,
+            tokensOut: data.tokensOut,
+            cost: data.cost,
+            contextLimit: data.contextLimit,
+            contextPercentage: data.contextPercentage,
+            subagentCount: data.subagentCount,
+          },
+        }));
+        break;
+      }
+
+      case "project:create_agent_finished": {
+        setProjectCreateState((prev) => ({
+          ...prev,
+          planningUsage: {
+            ...prev.planningUsage,
+            model: data.model,
+            tokensIn: data.tokensIn,
+            tokensOut: data.tokensOut,
+            cost: data.cost,
+            contextLimit: data.contextLimit,
+            contextPercentage: data.contextPercentage,
+            subagentCount: data.subagentCount,
+            live: false,
+          },
+        }));
         break;
       }
 
@@ -576,6 +655,7 @@ export function useWebSocket(url: string): WebSocketState {
         events: [],
         taskCount: 0,
         error: null,
+        planningUsage: initialPlanningUsage,
       });
       setProjectError(null);
     }

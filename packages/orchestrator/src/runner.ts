@@ -753,17 +753,66 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
   async loadPlanWithAgent(planContent: string): Promise<number> {
     console.log("[runner] spawning agent to decompose plan (ultrathink)...");
 
+    // Persist pasted plan to disk so downstream phases/agents see the real content.
+    try {
+      fs.writeFileSync(path.join(this.config.projectDir, "plan.md"), planContent);
+    } catch (err) {
+      console.warn("[runner] failed to write plan.md:", err);
+    }
+
+    const projectName = path.basename(this.config.projectDir);
+    const planModel = this.config.models.planning;
+    const planEffort = this.config.planningEffort;
+    const planContextLimit = MODEL_CONTEXT_LIMITS[planModel] ?? DEFAULT_CONTEXT_LIMIT;
+
+    this.events.broadcast({
+      type: "project:create_agent_started",
+      projectName,
+      model: planModel,
+      effort: planEffort,
+    });
+
     const result = await agentParsePlan({
       claude: this.claude,
       db: this.db,
       planContent,
       projectDir: this.config.projectDir,
-      model: this.config.models.planning, // opus + max thinking for plan parsing
-      effort: this.config.planningEffort, // ultrathink — most important step
+      model: planModel, // opus + max thinking for plan parsing
+      effort: planEffort, // ultrathink — most important step
       timeout: this.config.taskTimeout,
       onOutput: (line) => {
         this.events.taskLogAppend(-1, line); // -1 = plan parsing pseudo-task
+        this.events.broadcast({ type: "project:create_log", projectName, line });
       },
+      onUsage: (usage) => {
+        const used = usage.tokensIn + usage.tokensOut;
+        const pct = Math.min(100, (used / planContextLimit) * 100);
+        this.events.broadcast({
+          type: "project:create_agent_usage",
+          projectName,
+          tokensIn: usage.tokensIn,
+          tokensOut: usage.tokensOut,
+          cost: usage.cost,
+          contextLimit: planContextLimit,
+          contextPercentage: pct,
+          subagentCount: usage.subagentCount,
+        });
+      },
+    });
+
+    const finalUsage = result.usage ?? { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
+    const finalUsed = finalUsage.tokensIn + finalUsage.tokensOut;
+    const finalPct = Math.min(100, (finalUsed / planContextLimit) * 100);
+    this.events.broadcast({
+      type: "project:create_agent_finished",
+      projectName,
+      model: result.model ?? planModel,
+      tokensIn: finalUsage.tokensIn,
+      tokensOut: finalUsage.tokensOut,
+      cost: finalUsage.cost,
+      contextLimit: planContextLimit,
+      contextPercentage: finalPct,
+      subagentCount: finalUsage.subagentCount,
     });
 
     if (result.errors.length > 0) {
@@ -962,7 +1011,7 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
           let result;
           try {
-            result = scaffoldProject({ projectName, baseDir });
+            result = scaffoldProject({ projectName, baseDir, planMarkdown: effectivePlan });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const collision = /already exists and is not empty/i.test(msg);
@@ -1006,13 +1055,23 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
             });
             console.log("[runner] spawning agent to decompose plan (ultrathink)...");
 
+            const planModel = this.config.models.planning;
+            const planEffort = this.config.planningEffort;
+            const planContextLimit = MODEL_CONTEXT_LIMITS[planModel] ?? DEFAULT_CONTEXT_LIMIT;
+            this.events.broadcast({
+              type: "project:create_agent_started",
+              projectName,
+              model: planModel,
+              effort: planEffort,
+            });
+
             const parseResult = await agentParsePlan({
               claude: this.claude,
               db: this.db,
               planContent: effectivePlan,
               projectDir: result.projectDir,
-              model: this.config.models.planning,
-              effort: this.config.planningEffort,
+              model: planModel,
+              effort: planEffort,
               timeout: this.config.taskTimeout,
               onOutput: (line) => {
                 this.events.broadcast({
@@ -1021,6 +1080,35 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
                   line,
                 });
               },
+              onUsage: (usage) => {
+                const used = usage.tokensIn + usage.tokensOut;
+                const pct = Math.min(100, (used / planContextLimit) * 100);
+                this.events.broadcast({
+                  type: "project:create_agent_usage",
+                  projectName,
+                  tokensIn: usage.tokensIn,
+                  tokensOut: usage.tokensOut,
+                  cost: usage.cost,
+                  contextLimit: planContextLimit,
+                  contextPercentage: pct,
+                  subagentCount: usage.subagentCount,
+                });
+              },
+            });
+
+            const finalUsage = parseResult.usage ?? { tokensIn: 0, tokensOut: 0, cost: 0, subagentCount: 0 };
+            const finalUsed = finalUsage.tokensIn + finalUsage.tokensOut;
+            const finalPct = Math.min(100, (finalUsed / planContextLimit) * 100);
+            this.events.broadcast({
+              type: "project:create_agent_finished",
+              projectName,
+              model: parseResult.model ?? planModel,
+              tokensIn: finalUsage.tokensIn,
+              tokensOut: finalUsage.tokensOut,
+              cost: finalUsage.cost,
+              contextLimit: planContextLimit,
+              contextPercentage: finalPct,
+              subagentCount: finalUsage.subagentCount,
             });
 
             if (parseResult.errors.length > 0) {

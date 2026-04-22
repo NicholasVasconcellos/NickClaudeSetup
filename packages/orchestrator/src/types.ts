@@ -161,6 +161,9 @@ export type WSEventFromServer =
   | { type: "project:create_error"; error: string; kind?: "collision" | "plan_read" | "plan_parse" | "scaffold" | "concurrent" | "unknown"; projectDir?: string }
   | { type: "project:create_progress"; stage: "scaffolding" | "scaffolded" | "parsing_plan" | "plan_parsed" | "done"; projectName: string; projectDir?: string; taskCount?: number; message?: string }
   | { type: "project:create_log"; projectName: string; line: string }
+  | { type: "project:create_agent_started"; projectName: string; model: string; effort: TaskEffort }
+  | { type: "project:create_agent_usage"; projectName: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
+  | { type: "project:create_agent_finished"; projectName: string; model: string; tokensIn: number; tokensOut: number; cost: number; contextLimit: number; contextPercentage: number; subagentCount: number }
   | { type: "project:list_result"; projects: Array<{ name: string; path: string; taskCount: number; lastModified: string }> }
   | { type: "project:info"; name: string; dir: string };
 

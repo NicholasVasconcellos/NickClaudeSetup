@@ -1,7 +1,115 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import type { ProjectCreateState, ProjectCreateStage } from "@/hooks/useWebSocket";
+import type { PlanningAgentUsage, ProjectCreateState, ProjectCreateStage } from "@/hooks/useWebSocket";
 import CreateLogPanel from "./CreateLogPanel";
+
+function PlanningMetrics({ usage }: { usage: PlanningAgentUsage }) {
+  const hasData =
+    usage.live || usage.tokensIn > 0 || usage.tokensOut > 0 || usage.cost > 0 || usage.model;
+  if (!hasData) return null;
+
+  const pct = usage.contextPercentage;
+  const barColor = pct >= 90 ? "var(--error)" : pct >= 70 ? "#f59e0b" : "var(--accent)";
+  const total = usage.tokensIn + usage.tokensOut;
+  const fmt = (n: number) => n.toLocaleString();
+
+  const cell: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 };
+  const label: React.CSSProperties = {
+    fontSize: 10,
+    color: "var(--text-muted)",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  };
+  const value: React.CSSProperties = {
+    fontSize: 12,
+    color: "var(--text-primary)",
+    fontFamily: "'SF Mono', 'Fira Code', monospace",
+  };
+
+  return (
+    <div
+      style={{
+        backgroundColor: "var(--bg-tertiary)",
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+        padding: "8px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+          gap: 10,
+        }}
+      >
+        <div style={cell}>
+          <span style={label}>Model</span>
+          <span style={{ ...value, fontSize: 11 }} title={usage.model ?? ""}>
+            {usage.model?.replace(/^claude-/, "") ?? "—"}
+            {usage.effort ? ` · ${usage.effort}` : ""}
+          </span>
+        </div>
+        <div style={cell}>
+          <span style={label}>Tokens in</span>
+          <span style={value}>{fmt(usage.tokensIn)}</span>
+        </div>
+        <div style={cell}>
+          <span style={label}>Tokens out</span>
+          <span style={value}>{fmt(usage.tokensOut)}</span>
+        </div>
+        <div style={cell}>
+          <span style={label}>Cost</span>
+          <span style={value}>${usage.cost.toFixed(4)}</span>
+        </div>
+        <div style={cell}>
+          <span style={label}>Subagents</span>
+          <span style={value}>
+            {usage.subagentCount}
+            {usage.live && (
+              <span style={{ color: "var(--text-muted)", marginLeft: 4, fontSize: 10 }}>live</span>
+            )}
+          </span>
+        </div>
+      </div>
+      <div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: 10,
+            color: "var(--text-muted)",
+            marginBottom: 3,
+          }}
+        >
+          <span>Context</span>
+          <span>
+            {fmt(total)} / {fmt(usage.contextLimit)} ({pct.toFixed(1)}%)
+          </span>
+        </div>
+        <div
+          style={{
+            height: 4,
+            backgroundColor: "var(--bg-primary)",
+            borderRadius: 2,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              width: `${Math.min(100, pct)}%`,
+              height: "100%",
+              backgroundColor: barColor,
+              transition: "width 0.3s ease, background-color 0.3s",
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface ProjectInfo {
   name: string;
@@ -541,6 +649,9 @@ export default function ProjectSetup({
                         {createState.message}
                       </div>
                     )}
+
+                    {/* Planning agent metrics (live cost / tokens / context) */}
+                    <PlanningMetrics usage={createState.planningUsage} />
 
                     {/* Live agent events (parsed stream-json) */}
                     <CreateLogPanel
