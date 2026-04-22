@@ -46,11 +46,18 @@ export interface ParsePlanResult {
 
 // ── Template Resolution ──────────────────────────────────────
 
-function getTemplatesDir(): string {
+function getRepoRoot(): string {
   const thisFile = fileURLToPath(import.meta.url);
-  // src/project.ts → packages/orchestrator → repo root → templates/
-  const repoRoot = path.resolve(path.dirname(thisFile), "../../..");
-  return path.join(repoRoot, "templates");
+  // src/project.ts (tsx) or dist/project.js → packages/orchestrator → repo root
+  return path.resolve(path.dirname(thisFile), "../../..");
+}
+
+function getTemplatesDir(): string {
+  return path.join(getRepoRoot(), "templates");
+}
+
+function getSkillsDir(): string {
+  return path.join(getRepoRoot(), ".claude", "skills");
 }
 
 function interpolateTemplate(template: string, vars: Record<string, string>): string {
@@ -141,6 +148,14 @@ export function scaffoldProject(options: ScaffoldOptions): ProjectScaffoldResult
         "",
       ].join("\n");
   fs.writeFileSync(path.join(projectDir, "plan.md"), planBody);
+
+  // Seed project-local skills from this repo so each project is pinned to the
+  // orchestrator's expected skill versions (not ~/.claude/skills which can drift).
+  const skillsSource = getSkillsDir();
+  if (fs.existsSync(skillsSource)) {
+    const skillsDest = path.join(projectDir, ".claude", "skills");
+    fs.cpSync(skillsSource, skillsDest, { recursive: true });
+  }
 
   // Initialize SQLite DB
   const dbPath = path.join(projectDir, ".orchestrator/orchestrator.db");
