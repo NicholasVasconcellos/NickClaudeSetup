@@ -29,6 +29,7 @@ export default function DashboardPage() {
   const [showPlanning, setShowPlanning] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatWaiting, setChatWaiting] = useState(false);
+  const [showProjectSelect, setShowProjectSelect] = useState(false);
 
   const handleCreateTask = (taskDef: { title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }) => {
     sendCommand({ type: "task:create", ...taskDef });
@@ -61,6 +62,14 @@ export default function DashboardPage() {
 
   const handleOpenProject = (projectDir: string) => {
     sendCommand({ type: "project:open", projectDir });
+    setShowProjectSelect(false);
+  };
+
+  const handleBackToProjects = () => {
+    if (projectInfo) {
+      sendCommand({ type: "project:list", baseDir: projectInfo.dir.replace(/\/[^/]+$/, "") });
+    }
+    setShowProjectSelect(true);
   };
 
   const handleOpenInVSCode = () => {
@@ -178,7 +187,7 @@ export default function DashboardPage() {
     return first;
   }, [pendingReviews]);
 
-  if (tasks.size === 0 && !projectInfo) {
+  if ((tasks.size === 0 && !projectInfo) || showProjectSelect) {
     return (
       <ProjectSetup
         connected={connected}
@@ -284,6 +293,23 @@ export default function DashboardPage() {
           </span>
           {projectInfo && (
             <button
+              onClick={handleBackToProjects}
+              title="Back to project list"
+              style={{
+                background: "none",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+            >
+              ← Projects
+            </button>
+          )}
+          {projectInfo && (
+            <button
               onClick={handleOpenInVSCode}
               title={`Open ${projectInfo.dir} in VS Code`}
               style={{
@@ -332,7 +358,7 @@ export default function DashboardPage() {
 
       {/* Main content */}
       <PanelGroup orientation="horizontal" id="db-main" style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-        <Panel defaultSize={75} minSize={40} style={{ overflow: "hidden" }}>
+        <Panel defaultSize="75%" minSize="40%" style={{ overflow: "hidden" }}>
         <div
           style={{
             height: "100%",
@@ -352,7 +378,7 @@ export default function DashboardPage() {
 
           <PanelGroup orientation="vertical" id="db-stack" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
             {/* Task graph area */}
-            <Panel defaultSize={55} minSize={20} style={{ display: "flex", minHeight: 200 }}>
+            <Panel defaultSize="55%" minSize="20%" style={{ display: "flex", minHeight: 200 }}>
               <TaskGraph
                 tasks={taskGraphData}
                 layers={layers}
@@ -364,7 +390,7 @@ export default function DashboardPage() {
 
             <PanelResizeHandle style={{ height: 6, background: "var(--border)", cursor: "row-resize", opacity: 0.5 }} />
 
-            <Panel defaultSize={45} minSize={15} style={{ display: "flex", flexDirection: "column", overflow: "auto", gap: 12 }}>
+            <Panel defaultSize="45%" minSize="15%" style={{ display: "flex", flexDirection: "column", overflow: "auto", gap: 12 }}>
           {/* Review panel (shown when task needs human review) */}
           {activeReview && (
             <ReviewPanel
@@ -513,7 +539,7 @@ export default function DashboardPage() {
 
         <PanelResizeHandle style={{ width: 6, background: "var(--border)", cursor: "col-resize", opacity: 0.5 }} />
 
-        <Panel defaultSize={25} minSize={15} maxSize={50} style={{ overflow: "hidden", minWidth: 300 }}>
+        <Panel defaultSize="25%" minSize="15%" maxSize="50%" style={{ overflow: "hidden", minWidth: 300 }}>
         {/* Sidebar */}
         <aside
           style={{
