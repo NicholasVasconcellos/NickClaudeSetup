@@ -192,9 +192,10 @@ export type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: TaskState; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
-  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; model: string; contextLimit: number; contextPercentage: number }
+  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; cacheRead: number; cacheCreation: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: TaskEffort | null }
   | { type: "task:unblocked"; taskId: number }
+  | { type: "task:awaiting_start"; taskId: number }
   | { type: "run:completed"; summary: RunSummary }
   | { type: "run:notification"; message: string; level: "info" | "warning" | "error" }
   | { type: "plan:loaded"; taskCount: number }
@@ -230,6 +231,7 @@ export type WSEventFromClient =
   | { type: "run:start"; mode: "automated" | "human_review" }
   | { type: "task:create"; title: string; description: string; dependsOn: number[]; milestone?: string; effort?: string }
   | { type: "task:approve"; taskId: number }
+  | { type: "task:start"; taskId: number }
   | { type: "prompt:submit"; taskId: number; prompt: string; threadMode: "continue" | "new" }
   | { type: "skills:list" }
   | { type: "skills:get"; skillName: string }
@@ -325,8 +327,13 @@ export interface ClaudeResult {
   stdout: string;
   stderr: string;
   cost: number;
+  /** Fresh input tokens (does not include cache reads or cache creations). */
   tokensIn: number;
   tokensOut: number;
+  /** Tokens served from the prompt cache (not context pressure). */
+  cacheRead: number;
+  /** Tokens written to the prompt cache during this call. */
+  cacheCreation: number;
   duration: number;
   /** True when runTask aborted the subprocess because the timeout elapsed. */
   timedOut: boolean;

@@ -85,7 +85,10 @@ export default function PlanEditor({ onLoadPlan, planLoaded, taskCount }: PlanEd
           background: "none",
           border: "none",
           cursor: "pointer",
-          color: "var(--text-muted)",
+          color:
+            collapsed && planLoaded && (taskCount ?? 0) > 0
+              ? "var(--success)"
+              : "var(--text-muted)",
           fontSize: 12,
           fontWeight: 600,
           textTransform: "uppercase",
@@ -94,7 +97,9 @@ export default function PlanEditor({ onLoadPlan, planLoaded, taskCount }: PlanEd
         }}
       >
         <span style={{ fontSize: 10 }}>{collapsed ? "\u25B8" : "\u25BE"}</span>
-        Plan
+        {collapsed && planLoaded && (taskCount ?? 0) > 0
+          ? `\u2713 ${taskCount} tasks loaded \u2014 click to edit`
+          : "Plan"}
       </button>
 
       {/* Body */}

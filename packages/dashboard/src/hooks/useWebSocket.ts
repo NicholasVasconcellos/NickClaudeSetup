@@ -85,7 +85,7 @@ type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: string; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
-  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; model: string; contextLimit: number; contextPercentage: number }
+  | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; cacheRead: number; cacheCreation: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "layer:started"; layerIndex: number; taskIds: number[] }
   | { type: "layer:completed"; layerIndex: number }
   | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: string | null }
@@ -100,6 +100,7 @@ type WSEventFromServer =
   | { type: "suggestion:new"; title: string; description: string; filePath: string }
   | { type: "run:started"; mode: "automated" | "human_review"; sessionId: number }
   | { type: "branch:update"; taskId: number; branch: string; status: "created" | "merged" | "deleted" }
+  | { type: "task:awaiting_start"; taskId: number }
   | { type: "project:created"; projectDir: string; dbPath: string; taskCount: number }
   | { type: "project:create_error"; error: string; kind?: ProjectCreateErrorKind; projectDir?: string }
   | { type: "project:create_progress"; stage: ProjectCreateStage; projectName: string; projectDir?: string; taskCount?: number; message?: string }
@@ -142,6 +143,7 @@ type WSEventFromClient =
   | { type: "task:retry"; taskId: number }
   | { type: "task:skip"; taskId: number }
   | { type: "task:approve"; taskId: number }
+  | { type: "task:start"; taskId: number }
   | { type: "skills:list" }
   | { type: "skills:get"; skillName: string }
   | { type: "skills:save"; skillName: string; content: string }
@@ -180,6 +182,9 @@ export interface TaskInfo {
   cost: number;
   tokensIn: number;
   tokensOut: number;
+  cacheRead: number;
+  cacheCreation: number;
+  awaitingStart?: boolean;
   contextHistory: PhaseContextInfo[];
   contextRollup: { totalTokensUsed: number; peakPercentage: number };
 }
@@ -212,7 +217,7 @@ export interface WebSocketState {
   tasks: Map<number, TaskInfo>;
   logs: Map<number, string[]>;
   layers: { active: number; completed: number[] };
-  costs: { totalCost: number; totalTokensIn: number; totalTokensOut: number };
+  costs: { totalCost: number; totalTokensIn: number; totalTokensOut: number; totalCacheRead: number; totalCacheCreation: number };
   summary: RunSummary | null;
   skills: SkillListItem[];
   skillContent: SkillContent | null;
@@ -271,6 +276,8 @@ export function useWebSocket(url: string): WebSocketState {
     totalCost: 0,
     totalTokensIn: 0,
     totalTokensOut: 0,
+    totalCacheRead: 0,
+    totalCacheCreation: 0,
   });
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [skills, setSkills] = useState<SkillListItem[]>([]);
@@ -302,6 +309,8 @@ export function useWebSocket(url: string): WebSocketState {
             cost: 0,
             tokensIn: 0,
             tokensOut: 0,
+            cacheRead: 0,
+            cacheCreation: 0,
             contextHistory: [],
             contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
           };
@@ -309,6 +318,7 @@ export function useWebSocket(url: string): WebSocketState {
             ...existing,
             state: data.newState,
             title: data.title ?? existing.title,
+            awaitingStart: data.newState === "pending" ? existing.awaitingStart : false,
           });
           return next;
         });
@@ -330,6 +340,8 @@ export function useWebSocket(url: string): WebSocketState {
             cost: 0,
             tokensIn: 0,
             tokensOut: 0,
+            cacheRead: 0,
+            cacheCreation: 0,
             contextHistory: [],
             contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
           };
@@ -380,6 +392,8 @@ export function useWebSocket(url: string): WebSocketState {
             cost: 0,
             tokensIn: 0,
             tokensOut: 0,
+            cacheRead: 0,
+            cacheCreation: 0,
             contextHistory: [],
             contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
           };
@@ -398,6 +412,8 @@ export function useWebSocket(url: string): WebSocketState {
             cost: existing.cost + data.cost,
             tokensIn: existing.tokensIn + data.tokensIn,
             tokensOut: existing.tokensOut + data.tokensOut,
+            cacheRead: existing.cacheRead + (data.cacheRead ?? 0),
+            cacheCreation: existing.cacheCreation + (data.cacheCreation ?? 0),
             contextHistory: history,
             contextRollup: { totalTokensUsed, peakPercentage },
           });
@@ -407,6 +423,8 @@ export function useWebSocket(url: string): WebSocketState {
           totalCost: prev.totalCost + data.cost,
           totalTokensIn: prev.totalTokensIn + data.tokensIn,
           totalTokensOut: prev.totalTokensOut + data.tokensOut,
+          totalCacheRead: prev.totalCacheRead + (data.cacheRead ?? 0),
+          totalCacheCreation: prev.totalCacheCreation + (data.cacheCreation ?? 0),
         }));
         break;
       }
@@ -426,6 +444,8 @@ export function useWebSocket(url: string): WebSocketState {
                 cost: 0,
                 tokensIn: 0,
                 tokensOut: 0,
+                cacheRead: 0,
+                cacheCreation: 0,
                 contextHistory: [],
                 contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
               });
@@ -446,11 +466,13 @@ export function useWebSocket(url: string): WebSocketState {
 
       case "run:completed": {
         setSummary(data.summary);
-        setCosts({
+        setCosts((prev) => ({
           totalCost: data.summary.totalCost,
           totalTokensIn: data.summary.totalTokensIn,
           totalTokensOut: data.summary.totalTokensOut,
-        });
+          totalCacheRead: prev.totalCacheRead,
+          totalCacheCreation: prev.totalCacheCreation,
+        }));
         break;
       }
 
@@ -513,6 +535,25 @@ export function useWebSocket(url: string): WebSocketState {
 
       case "branch:update": {
         // Branch info derived from task states; no-op for dedicated events
+        break;
+      }
+
+      case "task:awaiting_start": {
+        setTasks((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(data.taskId) ?? {
+            state: "pending" as TaskState,
+            cost: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            cacheRead: 0,
+            cacheCreation: 0,
+            contextHistory: [],
+            contextRollup: { totalTokensUsed: 0, peakPercentage: 0 },
+          };
+          next.set(data.taskId, { ...existing, awaitingStart: true });
+          return next;
+        });
         break;
       }
 

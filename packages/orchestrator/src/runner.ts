@@ -72,6 +72,9 @@ export class Runner {
   private notifications: string[];
   private pendingApprovals: Map<number, () => void>;
   private creatingProject: string | null;
+  private activeAbortControllers: Map<number, AbortController>;
+  /** In human_review mode, task IDs waiting for an explicit task:start click. */
+  private awaitingStart: Set<number>;
 
   private config: OrchestratorConfig;
 
@@ -97,6 +100,34 @@ export class Runner {
     this.notifications = [];
     this.pendingApprovals = new Map();
     this.creatingProject = null;
+    this.activeAbortControllers = new Map();
+    this.awaitingStart = new Set();
+  }
+
+  // ── createTaskAbortController ─────────────────────────────
+  //
+  // Per-task controller that inherits aborts from the run-wide controller AND
+  // can be individually aborted (e.g. from Pause All). Caller must call
+  // cleanup() in a finally block to release the listener and map entry.
+  private createTaskAbortController(taskId: number): { signal: AbortSignal; cleanup: () => void } {
+    const ctrl = new AbortController();
+    this.activeAbortControllers.set(taskId, ctrl);
+
+    const onRunAbort = () => ctrl.abort();
+    if (this.abortController.signal.aborted) {
+      ctrl.abort();
+    } else {
+      this.abortController.signal.addEventListener("abort", onRunAbort, { once: true });
+    }
+
+    const cleanup = () => {
+      this.abortController.signal.removeEventListener("abort", onRunAbort);
+      if (this.activeAbortControllers.get(taskId) === ctrl) {
+        this.activeAbortControllers.delete(taskId);
+      }
+    };
+
+    return { signal: ctrl.signal, cleanup };
   }
 
   // ── swapDatabase ─────────────────────────────────────────
@@ -271,6 +302,8 @@ export class Runner {
     if (this.paused) return;
     if (this.abortController.signal.aborted) return;
 
+    const parked: number[] = [];
+
     while (
       this.readyQueue.length > 0 &&
       this.activeTasks < this.config.maxConcurrency
@@ -278,6 +311,20 @@ export class Runner {
       const taskId = this.readyQueue.shift()!;
       const task = this.db.getTask(taskId);
       if (!task || task.state !== "pending") continue;
+
+      // In human_review mode, tasks must be explicitly started by the user
+      // (the start click is the review checkpoint).
+      if (this.config.mode === "human_review" && !this.awaitingStart.has(taskId)) {
+        this.awaitingStart.add(taskId);
+        this.events.broadcast({ type: "task:awaiting_start", taskId });
+        parked.push(taskId);
+        continue;
+      }
+      if (this.awaitingStart.has(taskId)) {
+        // Still awaiting a start click — re-park and move on.
+        parked.push(taskId);
+        continue;
+      }
 
       this.activeTasks++;
       console.log(
@@ -288,6 +335,9 @@ export class Runner {
         this.onTaskSettled(taskId);
       });
     }
+
+    // Keep parked tasks in the queue so a later task:start can reach them.
+    for (const id of parked) this.readyQueue.push(id);
   }
 
   // ── onTaskSettled ──────────────────────────────────────────
@@ -326,9 +376,10 @@ export class Runner {
       this.events.notify(msg, "error");
       console.error(`[runner] ${msg}`);
       this.abortController.abort();
-    } else if (task && task.state === "pending" && !this.abortController.signal.aborted) {
+    } else if (task && task.state === "pending" && !this.abortController.signal.aborted && !this.paused) {
       // Rewound for retry — re-enqueue (guard abort so a concurrent failure doesn't
-      // sneak a retry into the queue after the workflow has been stopped)
+      // sneak a retry into the queue after the workflow has been stopped, and
+      // guard paused so rewound tasks don't flood back in while pause is active)
       this.readyQueue.push(taskId);
       console.log(
         `[runner] task ${taskId} re-enqueued for retry (${task.retryCount}/${task.maxRetries})`
@@ -390,11 +441,14 @@ export class Runner {
 
     this.db.finishAgentRun(runId, result.tokensIn, result.tokensOut, result.cost, result.duration);
     const contextLimit = MODEL_CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT;
+    // Use fresh tokens only for context pressure — cache-read tokens are already-counted
+    // context re-attached by the server and do not compete for the window.
     const tokensUsed = result.tokensIn + result.tokensOut;
     const contextPercentage = Math.min(100, (tokensUsed / contextLimit) * 100);
     this.events.agentFinished(
       taskId, phase, tokensUsed, result.cost,
-      result.tokensIn, result.tokensOut, model, contextLimit, contextPercentage,
+      result.tokensIn, result.tokensOut, result.cacheRead, result.cacheCreation,
+      model, contextLimit, contextPercentage,
     );
 
     if (result.exitCode !== 0 && !signal.aborted) {
@@ -408,7 +462,7 @@ export class Runner {
 
   private async executeTask(task: Task): Promise<void> {
     const { id: taskId } = task;
-    const signal = this.abortController.signal;
+    const { signal, cleanup: cleanupSignal } = this.createTaskAbortController(taskId);
 
     let worktreePath: string | null = null;
 
@@ -428,10 +482,6 @@ export class Runner {
       {
         const oldState = this.stateMachine.transition(taskId, "done");
         this.events.taskStateChanged(taskId, oldState, "done", task.title);
-      }
-
-      if (this.config.mode === "human_review") {
-        await this.waitForApproval(taskId);
       }
 
       await this.enqueueMerge(taskId);
@@ -456,6 +506,7 @@ export class Runner {
         console.error(`[task:${taskId}] state machine fail() threw:`, smErr);
       }
     } finally {
+      cleanupSignal();
       if (worktreePath !== null) {
         const finalTask = this.db.getTask(taskId);
         if (finalTask && finalTask.state !== "merged" && finalTask.state !== "done") {
@@ -683,18 +734,25 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
     const effort = this.config.phaseEffortDefaults[phase];
 
-    const result = await this.claude.runTask({
-      prompt,
-      cwd: this.config.projectDir,
-      model,
-      effort,
-      timeout: this.config.taskTimeout,
-      signal: this.abortController.signal,
-      onOutput: (line) => {
-        this.db.appendLog(taskId, phase, line);
-        this.events.taskLogAppend(taskId, line);
-      },
-    });
+    const { signal: mergeSignal, cleanup: cleanupMergeSignal } = this.createTaskAbortController(taskId);
+
+    let result;
+    try {
+      result = await this.claude.runTask({
+        prompt,
+        cwd: this.config.projectDir,
+        model,
+        effort,
+        timeout: this.config.taskTimeout,
+        signal: mergeSignal,
+        onOutput: (line) => {
+          this.db.appendLog(taskId, phase, line);
+          this.events.taskLogAppend(taskId, line);
+        },
+      });
+    } finally {
+      cleanupMergeSignal();
+    }
 
     this.db.finishAgentRun(
       runId,
@@ -708,7 +766,8 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
     const mergeContextPct = Math.min(100, (mergeTokensUsed / mergeContextLimit) * 100);
     this.events.agentFinished(
       taskId, phase, mergeTokensUsed, result.cost,
-      result.tokensIn, result.tokensOut, model, mergeContextLimit, mergeContextPct,
+      result.tokensIn, result.tokensOut, result.cacheRead, result.cacheCreation,
+      model, mergeContextLimit, mergeContextPct,
     );
 
     if (result.exitCode !== 0) {
@@ -956,6 +1015,14 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
 
       case "run:pause_all":
         this.paused = true;
+        for (const [tid, ctrl] of this.activeAbortControllers) {
+          try {
+            ctrl.abort();
+            console.log(`[runner] pause aborted active task ${tid}`);
+          } catch (err) {
+            console.warn(`[runner] failed to abort task ${tid}:`, err);
+          }
+        }
         console.log("[runner] run paused");
         break;
 
@@ -975,6 +1042,18 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
         } else {
           console.warn(`[runner] approve: no pending approval for task ${taskId}`);
         }
+        break;
+      }
+
+      case "task:start": {
+        const { taskId } = event;
+        if (!this.awaitingStart.has(taskId)) {
+          console.warn(`[runner] task:start: task ${taskId} not awaiting start`);
+          break;
+        }
+        this.awaitingStart.delete(taskId);
+        console.log(`[runner] task ${taskId} start approved by user`);
+        this.drainReadyQueue();
         break;
       }
 

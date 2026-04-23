@@ -289,10 +289,10 @@ export class EventBus {
 
   agentFinished(
     taskId: number, phase: TaskPhase, tokens: number, cost: number,
-    tokensIn: number, tokensOut: number, model: string,
-    contextLimit: number, contextPercentage: number,
+    tokensIn: number, tokensOut: number, cacheRead: number, cacheCreation: number,
+    model: string, contextLimit: number, contextPercentage: number,
   ): void {
-    this.broadcast({ type: "task:agent_finished", taskId, phase, tokens, cost, tokensIn, tokensOut, model, contextLimit, contextPercentage });
+    this.broadcast({ type: "task:agent_finished", taskId, phase, tokens, cost, tokensIn, tokensOut, cacheRead, cacheCreation, model, contextLimit, contextPercentage });
   }
 
   taskUnblocked(taskId: number): void {

@@ -4,10 +4,11 @@
   "private": true,
   "description": "TypeScript orchestrator for autonomous Claude Code task execution with visual dashboard",
   "scripts": {
-    "dev": "pnpm --filter orchestrator dev",
+    "dev": "pnpm --filter @claude-orchestrator/core dev",
     "dev:dashboard": "pnpm --filter dashboard dev",
+    "db-start": "concurrently -n orch,dash -c cyan,magenta \"pnpm --filter @claude-orchestrator/core dev -- serve\" \"pnpm --filter dashboard dev\"",
     "build": "pnpm -r build",
-    "start": "pnpm --filter orchestrator start",
+    "start": "pnpm --filter @claude-orchestrator/core start",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },
@@ -20,5 +21,8 @@
       "better-sqlite3",
       "esbuild"
     ]
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

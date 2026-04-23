@@ -20,6 +20,8 @@ interface CostData {
   cost: number;
   tokensIn: number;
   tokensOut: number;
+  cacheRead: number;
+  cacheCreation: number;
 }
 
 // Shape of the JSON stream messages emitted by `claude --output-format stream-json`
@@ -69,13 +71,15 @@ export class ClaudeRunner {
   // ── parseCostFromOutput ─────────────────────────────────────
 
   parseCostFromOutput(output: string): CostData {
-    const zero: CostData = { cost: 0, tokensIn: 0, tokensOut: 0 };
+    const zero: CostData = { cost: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheCreation: 0 };
 
     if (!output.trim()) return zero;
 
     let cost = 0;
     let tokensIn = 0;
     let tokensOut = 0;
+    let cacheRead = 0;
+    let cacheCreation = 0;
 
     // The CLI may emit one JSON object per line (streaming) or a single blob.
     // Try line-by-line first, then fall back to whole-string parse.
@@ -92,15 +96,14 @@ export class ClaudeRunner {
           cost = parsedCost;
         }
 
-        // Tokens from nested usage block
+        // Tokens from nested usage block — keep cache fields separate from fresh input.
+        // The terminal usage payload is cumulative, so take the max seen so far.
         if (parsed.usage) {
           const u = parsed.usage;
-          const inputRaw =
-            (u.input_tokens ?? 0) +
-            (u.cache_read_input_tokens ?? 0) +
-            (u.cache_creation_input_tokens ?? 0);
-          if (inputRaw > 0) tokensIn = inputRaw;
-          if ((u.output_tokens ?? 0) > 0) tokensOut = u.output_tokens!;
+          if ((u.input_tokens ?? 0) > tokensIn) tokensIn = u.input_tokens!;
+          if ((u.output_tokens ?? 0) > tokensOut) tokensOut = u.output_tokens!;
+          if ((u.cache_read_input_tokens ?? 0) > cacheRead) cacheRead = u.cache_read_input_tokens!;
+          if ((u.cache_creation_input_tokens ?? 0) > cacheCreation) cacheCreation = u.cache_creation_input_tokens!;
         }
 
         // Tokens as direct fields (some CLI versions)
@@ -135,7 +138,7 @@ export class ClaudeRunner {
       if (match) tokensOut = parseInt(match[1], 10);
     }
 
-    return { cost, tokensIn, tokensOut };
+    return { cost, tokensIn, tokensOut, cacheRead, cacheCreation };
   }
 
   // ── runTask ─────────────────────────────────────────────────
@@ -198,6 +201,8 @@ export class ClaudeRunner {
           cost: 0,
           tokensIn: 0,
           tokensOut: 0,
+          cacheRead: 0,
+          cacheCreation: 0,
           duration: Date.now() - startTime,
           timedOut: false,
         });
@@ -284,7 +289,7 @@ export class ClaudeRunner {
             ? -1
             : (code ?? -1);
 
-        const { cost, tokensIn, tokensOut } = this.parseCostFromOutput(stdout);
+        const { cost, tokensIn, tokensOut, cacheRead, cacheCreation } = this.parseCostFromOutput(stdout);
 
         resolve({
           exitCode,
@@ -293,6 +298,8 @@ export class ClaudeRunner {
           cost,
           tokensIn,
           tokensOut,
+          cacheRead,
+          cacheCreation,
           duration,
           timedOut,
         });
@@ -310,6 +317,8 @@ export class ClaudeRunner {
           cost: 0,
           tokensIn: 0,
           tokensOut: 0,
+          cacheRead: 0,
+          cacheCreation: 0,
           duration: Date.now() - startTime,
           timedOut: false,
         });

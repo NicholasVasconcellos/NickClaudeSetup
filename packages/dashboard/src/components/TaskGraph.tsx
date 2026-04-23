@@ -12,6 +12,7 @@ interface TaskData {
   phase?: string;
   cost?: number;
   contextPercentage?: number;
+  awaitingStart?: boolean;
 }
 
 interface TaskGraphProps {
@@ -19,6 +20,7 @@ interface TaskGraphProps {
   layers: { active: number; completed: number[] };
   selectedTaskId?: number;
   onSelectTask?: (id: number) => void;
+  onStartTask?: (taskId: number) => void;
 }
 
 const CARD_WIDTH = 200;
@@ -29,11 +31,17 @@ const PADDING = 24;
 
 const HIDDEN_STATES = new Set(["pending", "skipped"]);
 
+function isHidden(task: TaskData): boolean {
+  if (task.state === "pending" && task.awaitingStart) return false;
+  return HIDDEN_STATES.has(task.state);
+}
+
 export default function TaskGraph({
   tasks,
   layers,
   selectedTaskId,
   onSelectTask,
+  onStartTask,
 }: TaskGraphProps) {
   // Persistent position cache: once assigned, never moves
   const positionCache = useRef<Map<number, { layerIdx: number; slotIdx: number }>>(new Map());
@@ -44,7 +52,7 @@ export default function TaskGraph({
   const { taskLayers, positionMap } = useMemo(() => {
     const visibleIds: number[] = [];
     for (const [id, task] of tasks) {
-      if (!HIDDEN_STATES.has(task.state)) {
+      if (!isHidden(task)) {
         visibleIds.push(id);
       }
     }
@@ -197,7 +205,7 @@ export default function TaskGraph({
   // Collect dependency edges
   const edges: { fromId: number; toId: number }[] = [];
   for (const [id, task] of tasks) {
-    if (HIDDEN_STATES.has(task.state)) continue;
+    if (isHidden(task)) continue;
     if (task.dependsOn) {
       for (const depId of task.dependsOn) {
         if (taskPositions.has(depId)) {
@@ -264,6 +272,13 @@ export default function TaskGraph({
           const x = PADDING + pos.layerIdx * (CARD_WIDTH + LAYER_GAP);
           const y = PADDING + pos.slotIdx * (CARD_HEIGHT + CARD_GAP);
           const isSelected = selectedTaskId === taskId;
+          const isAwaitingStart = task.awaitingStart === true;
+
+          const outline = isSelected
+            ? `2px solid var(--accent)`
+            : isAwaitingStart
+              ? `2px dashed var(--accent)`
+              : "none";
 
           return (
             <div
@@ -273,9 +288,7 @@ export default function TaskGraph({
                 left: x,
                 top: y,
                 width: CARD_WIDTH,
-                outline: isSelected
-                  ? `2px solid var(--accent)`
-                  : "none",
+                outline,
                 outlineOffset: 2,
                 borderRadius: 6,
               }}
@@ -292,6 +305,32 @@ export default function TaskGraph({
                 contextPercentage={task.contextPercentage}
                 onClick={() => onSelectTask?.(taskId)}
               />
+              {isAwaitingStart && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onStartTask?.(taskId);
+                  }}
+                  style={{
+                    position: "absolute",
+                    top: 4,
+                    right: 4,
+                    background: "var(--accent)",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    lineHeight: 1.4,
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+                  }}
+                >
+                  ▶ Start
+                </button>
+              )}
             </div>
           );
         })}

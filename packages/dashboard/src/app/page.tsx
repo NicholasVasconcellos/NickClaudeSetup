@@ -8,8 +8,8 @@ import Controls from "@/components/Controls";
 import CostPanel from "@/components/CostPanel";
 import FileTree from "@/components/FileTree";
 import PlanEditor from "@/components/PlanEditor";
-import BranchGraph from "@/components/BranchGraph";
 import InlinePrompt from "@/components/InlinePrompt";
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
 import AddTaskForm from "@/components/AddTaskForm";
 import ReviewPanel from "@/components/ReviewPanel";
 import Suggestions from "@/components/Suggestions";
@@ -87,7 +87,7 @@ export default function DashboardPage() {
   }, [connected, projectInfo?.dir, sendCommand]);
 
   const taskGraphData = useMemo(() => {
-    const data = new Map<number, { state: string; title?: string; description?: string; milestone?: string | null; dependsOn?: number[]; phase?: string; cost?: number; contextPercentage?: number }>();
+    const data = new Map<number, { state: string; title?: string; description?: string; milestone?: string | null; dependsOn?: number[]; phase?: string; cost?: number; contextPercentage?: number; awaitingStart?: boolean }>();
     tasks.forEach((info, id) => {
       data.set(id, {
         state: info.state,
@@ -98,46 +98,11 @@ export default function DashboardPage() {
         phase: info.phase,
         cost: info.cost,
         contextPercentage: info.contextRollup?.peakPercentage,
+        awaitingStart: info.awaitingStart,
       });
     });
     return data;
   }, [tasks]);
-
-  const branchData = useMemo(() => {
-    const m = new Map<number, { taskId: number; branch: string; status: "created" | "merged" | "deleted" }>();
-    tasks.forEach((info, id) => {
-      if (info.state === "spec" || info.state === "executing" || info.state === "reviewing" || info.state === "done" || info.state === "paused") {
-        m.set(id, { taskId: id, branch: `task/${id}`, status: "created" });
-      } else if (info.state === "merged") {
-        m.set(id, { taskId: id, branch: `task/${id}`, status: "merged" });
-      }
-    });
-    return m;
-  }, [tasks]);
-
-  const taskPositions = useMemo(() => {
-    const positions = new Map<number, { layerIdx: number }>();
-    const layerCache = new Map<number, number>();
-
-    function computeLayer(id: number): number {
-      if (layerCache.has(id)) return layerCache.get(id)!;
-      const task = taskGraphData.get(id);
-      if (!task?.dependsOn?.length) { layerCache.set(id, 0); return 0; }
-      let maxDep = 0;
-      for (const depId of task.dependsOn) {
-        if (taskGraphData.has(depId)) {
-          maxDep = Math.max(maxDep, computeLayer(depId) + 1);
-        }
-      }
-      layerCache.set(id, maxDep);
-      return maxDep;
-    }
-
-    taskGraphData.forEach((_, id) => {
-      positions.set(id, { layerIdx: computeLayer(id) });
-    });
-    return positions;
-  }, [taskGraphData]);
 
   const selectedLogs = useMemo(() => {
     if (selectedTaskId == null) {
@@ -367,22 +332,16 @@ export default function DashboardPage() {
       </header>
 
       {/* Main content */}
-      <div
-        style={{
-          display: "flex",
-          flex: 1,
-          overflow: "hidden",
-        }}
-      >
-        {/* Task graph + logs */}
+      <PanelGroup orientation="horizontal" id="db-main" style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+        <Panel defaultSize={75} minSize={40} style={{ overflow: "hidden" }}>
         <div
           style={{
-            flex: 1,
+            height: "100%",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
             padding: 16,
-            gap: 16,
+            gap: 12,
           }}
         >
           {/* Plan editor */}
@@ -392,19 +351,21 @@ export default function DashboardPage() {
             taskCount={planStatus.taskCount}
           />
 
-          {/* Branch visualization above DAG */}
-          <BranchGraph branches={branchData} taskPositions={taskPositions} />
+          <PanelGroup orientation="vertical" id="db-stack" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+            {/* Task graph area */}
+            <Panel defaultSize={55} minSize={20} style={{ display: "flex", minHeight: 200 }}>
+              <TaskGraph
+                tasks={taskGraphData}
+                layers={layers}
+                selectedTaskId={selectedTaskId}
+                onSelectTask={setSelectedTaskId}
+                onStartTask={(taskId) => sendCommand({ type: "task:start", taskId } as any)}
+              />
+            </Panel>
 
-          {/* Task graph area */}
-          <div style={{ flex: 1, minHeight: 200, display: "flex" }}>
-            <TaskGraph
-              tasks={taskGraphData}
-              layers={layers}
-              selectedTaskId={selectedTaskId}
-              onSelectTask={setSelectedTaskId}
-            />
-          </div>
+            <PanelResizeHandle style={{ height: 6, background: "var(--border)", cursor: "row-resize", opacity: 0.5 }} />
 
+            <Panel defaultSize={45} minSize={15} style={{ display: "flex", flexDirection: "column", overflow: "auto", gap: 12 }}>
           {/* Review panel (shown when task needs human review) */}
           {activeReview && (
             <ReviewPanel
@@ -485,7 +446,10 @@ export default function DashboardPage() {
                     <span>Cost: <span style={{ color: "var(--text-secondary)" }}>${task.cost.toFixed(4)}</span></span>
                   )}
                   {(task.tokensIn > 0 || task.tokensOut > 0) && (
-                    <span>Tokens: <span style={{ color: "var(--text-secondary)" }}>{task.tokensIn.toLocaleString()} in / {task.tokensOut.toLocaleString()} out</span></span>
+                    <span>Tokens: <span style={{ color: "var(--text-secondary)" }}>
+                      {task.tokensIn.toLocaleString()} in / {task.tokensOut.toLocaleString()} out
+                      {task.cacheRead > 0 && ` (${task.cacheRead.toLocaleString()} cached)`}
+                    </span></span>
                   )}
                 </div>
 
@@ -543,13 +507,18 @@ export default function DashboardPage() {
               />
             </div>
           )}
+            </Panel>
+          </PanelGroup>
         </div>
+        </Panel>
 
+        <PanelResizeHandle style={{ width: 6, background: "var(--border)", cursor: "col-resize", opacity: 0.5 }} />
+
+        <Panel defaultSize={25} minSize={15} maxSize={50} style={{ overflow: "hidden" }}>
         {/* Sidebar */}
         <aside
           style={{
-            width: 240,
-            flexShrink: 0,
+            height: "100%",
             borderLeft: "1px solid var(--border)",
             padding: 16,
             display: "flex",
@@ -563,6 +532,8 @@ export default function DashboardPage() {
             totalCost={costs.totalCost}
             tokensIn={costs.totalTokensIn}
             tokensOut={costs.totalTokensOut}
+            cacheRead={costs.totalCacheRead}
+            cacheCreation={costs.totalCacheCreation}
             taskCosts={taskCosts}
             taskContextData={taskContextData}
           />
@@ -696,7 +667,8 @@ export default function DashboardPage() {
             </div>
           )}
         </aside>
-      </div>
+        </Panel>
+      </PanelGroup>
 
       {showAddTask && (
         <AddTaskForm

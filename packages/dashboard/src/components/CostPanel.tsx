@@ -7,6 +7,8 @@ interface CostPanelProps {
   totalCost: number;
   tokensIn: number;
   tokensOut: number;
+  cacheRead?: number;
+  cacheCreation?: number;
   taskCosts?: Map<number, number>;
   taskContextData?: Map<number, { peakPercentage: number; totalTokensUsed: number }>;
 }
@@ -17,7 +19,7 @@ function formatTokenCount(count: number): string {
   return String(count);
 }
 
-export default function CostPanel({ totalCost, tokensIn, tokensOut, taskCosts, taskContextData }: CostPanelProps) {
+export default function CostPanel({ totalCost, tokensIn, tokensOut, cacheRead, cacheCreation, taskCosts, taskContextData }: CostPanelProps) {
   return (
     <div
       style={{
@@ -46,6 +48,11 @@ export default function CostPanel({ totalCost, tokensIn, tokensOut, taskCosts, t
           <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-primary)" }}>
             ${totalCost.toFixed(4)}
           </div>
+          {cacheRead !== undefined && cacheRead > 0 && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+              {formatTokenCount(cacheRead)} cached reads
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 16 }}>
@@ -59,6 +66,12 @@ export default function CostPanel({ totalCost, tokensIn, tokensOut, taskCosts, t
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Tokens Out</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)" }}>
               {formatTokenCount(tokensOut)}
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Cached</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)" }}>
+              {cacheRead && cacheRead > 0 ? formatTokenCount(cacheRead) : "\u2014"}
             </div>
           </div>
         </div>

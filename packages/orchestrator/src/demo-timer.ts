@@ -389,7 +389,7 @@ function emitAgent(bus: EventBus, taskId: number, phase: TaskPhase): void {
   const model = "claude-sonnet-4-6";
   const contextLimit = 200_000;
   const contextPercentage = Math.min(100, ((tokensIn + tokensOut) / contextLimit) * 100);
-  bus.agentFinished(taskId, phase, tokensIn + tokensOut, cost, tokensIn, tokensOut, model, contextLimit, contextPercentage);
+  bus.agentFinished(taskId, phase, tokensIn + tokensOut, cost, tokensIn, tokensOut, 0, 0, model, contextLimit, contextPercentage);
   totalTokensIn += tokensIn;
   totalTokensOut += tokensOut;
   totalCost += cost;

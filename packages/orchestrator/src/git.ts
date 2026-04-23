@@ -167,6 +167,11 @@ export class GitManager {
   }
 
   async push(): Promise<void> {
+    try {
+      await this.exec(["remote", "get-url", "origin"]);
+    } catch {
+      return;
+    }
     await this.exec(["push", "origin", this.mainBranch]);
   }
 
@@ -185,9 +190,17 @@ export class GitManager {
   }
 
   async getFilesChangedByMerge(): Promise<string[]> {
-    const { stdout } = await this.exec([
-      "diff", "--name-only", "HEAD^1", "HEAD",
-    ]);
+    const { stdout: parents } = await this.exec(["rev-list", "--parents", "-n", "1", "HEAD"]);
+    const parts = parents.trim().split(" ");
+    if (parts.length < 3) {
+      try {
+        const { stdout } = await this.exec(["diff", "--name-only", "HEAD~1", "HEAD"]);
+        return stdout.split("\n").filter(Boolean);
+      } catch {
+        return [];
+      }
+    }
+    const { stdout } = await this.exec(["diff", "--name-only", "HEAD^1", "HEAD"]);
     return stdout.split("\n").filter(Boolean);
   }
 
