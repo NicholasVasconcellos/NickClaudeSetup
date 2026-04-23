@@ -84,6 +84,7 @@ const MAX_CREATE_EVENTS = 5000;
 type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: string; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
+  | { type: "task:log_bulk"; taskId: number; lines: string[] }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; cacheRead: number; cacheCreation: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "layer:started"; layerIndex: number; taskIds: number[] }
@@ -363,6 +364,16 @@ export function useWebSocket(url: string): WebSocketState {
           const next = new Map(prev);
           const lines = next.get(data.taskId) ?? [];
           next.set(data.taskId, [...lines, data.line]);
+          return next;
+        });
+        break;
+      }
+
+      case "task:log_bulk": {
+        setLogs((prev) => {
+          const next = new Map(prev);
+          const lines = next.get(data.taskId) ?? [];
+          next.set(data.taskId, [...lines, ...data.lines]);
           return next;
         });
         break;
@@ -673,7 +684,22 @@ export function useWebSocket(url: string): WebSocketState {
       }
 
       case "project:info": {
-        setProjectInfo({ name: data.name, dir: data.dir });
+        setProjectInfo((prev) => {
+          // When the active project changes (or first open), reset all
+          // per-project state so replay/hydration starts from a clean slate.
+          if (!prev || prev.dir !== data.dir) {
+            setTasks(new Map());
+            setLogs(new Map());
+            setLayers({ active: -1, completed: [] });
+            setCosts({ totalCost: 0, totalTokensIn: 0, totalTokensOut: 0, totalCacheRead: 0, totalCacheCreation: 0 });
+            setSummary(null);
+            setPlanStatus({ loaded: false, taskCount: 0 });
+            setPromptResponses(new Map());
+            setPendingReviews(new Map());
+            setSuggestions([]);
+          }
+          return { name: data.name, dir: data.dir };
+        });
         break;
       }
 

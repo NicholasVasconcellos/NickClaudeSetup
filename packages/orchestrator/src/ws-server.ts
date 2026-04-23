@@ -283,6 +283,10 @@ export class EventBus {
     this.broadcast({ type: "task:log_append", taskId, line });
   }
 
+  taskLogBulk(taskId: number, lines: string[]): void {
+    this.broadcast({ type: "task:log_bulk", taskId, lines });
+  }
+
   agentStarted(taskId: number, phase: TaskPhase, model: string): void {
     this.broadcast({ type: "task:agent_started", taskId, phase, model });
   }

@@ -57,6 +57,7 @@ function agentRunRowToAgentRun(row: AgentRunRow): AgentRun {
     duration: row.duration,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    sessionId: row.session_id ?? null,
   };
 }
 
@@ -163,6 +164,7 @@ export class Database {
       "ALTER TABLE tasks ADD COLUMN effort TEXT",
       "ALTER TABLE tasks ADD COLUMN files_changed TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE tasks ADD COLUMN context_files TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE agent_runs ADD COLUMN session_id TEXT",
     ];
     for (const sql of migrations) {
       try { this.db.exec(sql); } catch { /* column already exists */ }
@@ -351,6 +353,34 @@ export class Database {
       .prepare("SELECT * FROM agent_runs ORDER BY id")
       .all() as AgentRunRow[];
     return rows.map(agentRunRowToAgentRun);
+  }
+
+  setAgentRunSession(runId: number, sessionId: string): void {
+    this.db
+      .prepare("UPDATE agent_runs SET session_id = ? WHERE id = ?")
+      .run(sessionId, runId);
+  }
+
+  getLatestSessionId(taskId: number, phase: TaskPhase): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT session_id FROM agent_runs
+         WHERE task_id = ? AND phase = ? AND session_id IS NOT NULL
+         ORDER BY id DESC LIMIT 1`
+      )
+      .get(taskId, phase) as { session_id: string | null } | undefined;
+    return row?.session_id ?? null;
+  }
+
+  // Mark any agent_runs that were never finished (orchestrator crash) as abandoned.
+  // Returns the number of rows updated. Preserves session_id so a resume can pick up.
+  finalizeAbandonedAgentRuns(): number {
+    const info = this.db
+      .prepare(
+        `UPDATE agent_runs SET finished_at = datetime('now') WHERE finished_at IS NULL`
+      )
+      .run();
+    return info.changes;
   }
 
   // ── Learnings ───────────────────────────────────────────────

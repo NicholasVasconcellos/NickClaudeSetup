@@ -15,6 +15,7 @@ import {
   loadTaskDefs,
   insertTaskDefs,
   parsePlanMetaPath,
+  parseSessionIdFromLine,
 } from "./project.js";
 import { ClaudeRunner } from "./claude.js";
 import { StateMachine } from "./state-machine.js";
@@ -146,6 +147,32 @@ export class Runner {
     this.learning.setDb(this.db);
     this.git = new GitManager(this.config);
     this.events.setProjectDir(this.config.projectDir);
+    this.recoverInterruptedTasks();
+  }
+
+  // Tasks left in a mid-phase state when the orchestrator exited (crash,
+  // Ctrl-C, or a graceful shutdown) are stranded because drainReadyQueue
+  // only dispatches "pending" tasks. Mark them paused so the dashboard can
+  // show them and a user Resume click re-enqueues from the stored session_id.
+  private recoverInterruptedTasks(): void {
+    const midPhaseStates = ["spec", "executing", "reviewing", "documenting"] as const;
+    const stuck = midPhaseStates.flatMap((s) => this.db.getTasksByState(s));
+    if (stuck.length === 0) return;
+
+    for (const task of stuck) {
+      try {
+        this.stateMachine.pause(task.id);
+        console.log(`[runner] recovered task ${task.id} (${task.state} → paused, phase=${task.phase ?? "?"})`);
+      } catch (err) {
+        console.error(`[runner] failed to recover task ${task.id}:`, err);
+      }
+    }
+
+    const finalized = this.db.finalizeAbandonedAgentRuns();
+    if (finalized > 0) {
+      console.log(`[runner] finalized ${finalized} abandoned agent_run(s)`);
+    }
+    console.log(`[runner] recovered ${stuck.length} interrupted task(s) into paused state`);
   }
 
   // ── init ──────────────────────────────────────────────────
@@ -414,6 +441,7 @@ export class Runner {
     phase: Exclude<TaskPhase, "merge">,
     worktreePath: string,
     signal: AbortSignal,
+    resumeSessionId?: string,
   ): Promise<void> {
     const targetState = Runner.PHASE_STATE[phase];
     const model = this.config.models[phase];
@@ -425,7 +453,11 @@ export class Runner {
     const effort = task.effort ?? this.config.phaseEffortDefaults[phase];
     const runId = this.db.startAgentRun(taskId, phase, model);
     const prompt = this.buildPrompt(task, phase);
+    if (resumeSessionId) {
+      console.log(`[task:${taskId}] resuming ${phase} from session ${resumeSessionId}`);
+    }
 
+    let capturedSessionId: string | null = resumeSessionId ?? null;
     const result = await this.claude.runTask({
       prompt,
       cwd: worktreePath,
@@ -433,9 +465,17 @@ export class Runner {
       effort,
       timeout: this.config.taskTimeout,
       signal,
+      resumeSessionId,
       onOutput: (line) => {
         this.db.appendLog(taskId, phase, line);
         this.events.taskLogAppend(taskId, line);
+        if (!capturedSessionId) {
+          const sid = parseSessionIdFromLine(line);
+          if (sid) {
+            capturedSessionId = sid;
+            this.db.setAgentRunSession(runId, sid);
+          }
+        }
       },
     });
 
@@ -473,8 +513,17 @@ export class Runner {
       console.log(`[task:${taskId}] worktree created at ${wt.worktreePath}`);
       this.events.branchUpdate(taskId, wt.branch, "created");
 
-      for (const phase of ["spec", "execute", "review", "document"] as const) {
-        await this.runPhase(taskId, phase, wt.worktreePath, signal);
+      const allPhases = ["spec", "execute", "review", "document"] as const;
+      const currentPhase = task.phase as typeof allPhases[number] | null;
+      const startIdx = currentPhase && allPhases.includes(currentPhase as typeof allPhases[number])
+        ? allPhases.indexOf(currentPhase as typeof allPhases[number])
+        : 0;
+
+      for (const phase of allPhases.slice(startIdx)) {
+        const resumeSid = phase === currentPhase
+          ? this.db.getLatestSessionId(taskId, phase)
+          : null;
+        await this.runPhase(taskId, phase, wt.worktreePath, signal, resumeSid ?? undefined);
         if (signal.aborted) return;
       }
 
@@ -965,8 +1014,10 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
         try {
           const t = this.db.getTask(taskId);
           this.stateMachine.resume(taskId);
-          this.events.taskStateChanged(taskId, "paused", t?.state ?? "executing", t?.title);
-          console.log(`[runner] task ${taskId} resumed`);
+          this.events.taskStateChanged(taskId, "paused", "pending", t?.title);
+          this.readyQueue.push(taskId);
+          this.drainReadyQueue();
+          console.log(`[runner] task ${taskId} resumed (phase=${t?.phase ?? "spec"})`);
         } catch (err) {
           console.error(`[runner] resume task ${taskId} failed:`, err);
         }
@@ -1870,6 +1921,10 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
           this.config.projectDir = resolvedDir;
           this.swapDatabase(dbPath);
 
+          // Broadcast project:info FIRST so the dashboard clears any stale
+          // state from a previous open before we start replaying events.
+          this.events.broadcast({ type: "project:info", name: projectName, dir: resolvedDir });
+
           const tasks = this.db.getAllTasks();
           for (const task of tasks) {
             this.events.taskInit(task.id, task.title, task.description, task.dependsOn, task.milestone, task.effort);
@@ -1877,9 +1932,31 @@ Only suggest genuinely useful follow-ups, not generic advice. If nothing comes t
               this.events.taskStateChanged(task.id, "pending", task.state, task.title);
             }
           }
+
+          // Replay persisted logs and agent runs so the dashboard rehydrates
+          // per-task log history, costs, tokens. Cache stats are not
+          // persisted; they replay as 0 (acceptable for historical view).
+          for (const task of tasks) {
+            const logs = this.db.getTaskLogs(task.id);
+            if (logs.length === 0) continue;
+            this.events.taskLogBulk(task.id, logs.map((r) => r.content));
+          }
+          const allRuns = this.db.getAgentRuns();
+          for (const run of allRuns) {
+            if (run.finishedAt === null) continue;
+            this.events.agentStarted(run.taskId, run.phase, run.model);
+            const contextLimit = MODEL_CONTEXT_LIMITS[run.model] ?? DEFAULT_CONTEXT_LIMIT;
+            const tokensUsed = run.tokensIn + run.tokensOut;
+            const contextPercentage = Math.min(100, (tokensUsed / contextLimit) * 100);
+            this.events.agentFinished(
+              run.taskId, run.phase, tokensUsed, run.cost,
+              run.tokensIn, run.tokensOut, 0, 0,
+              run.model, contextLimit, contextPercentage,
+            );
+          }
+
           this.events.planLoaded(tasks.length);
-          this.events.broadcast({ type: "project:info", name: projectName, dir: resolvedDir });
-          console.log(`[runner] opened project: ${resolvedDir} (${tasks.length} tasks)`);
+          console.log(`[runner] opened project: ${resolvedDir} (${tasks.length} tasks, replayed ${allRuns.length} agent_runs)`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.events.broadcast({ type: "project:create_error", kind: "unknown", error: msg, projectDir: resolvedDir });

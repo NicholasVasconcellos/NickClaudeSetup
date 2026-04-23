@@ -28,7 +28,7 @@ const TRANSITIONS: Record<TaskState, Set<TaskState>> = {
   merged:       new Set([                                            ]),
   failed:       new Set([                                            ]),
   skipped:      new Set([                                            ]),
-  paused:       new Set(["executing",   "failed",           "skipped"]),
+  paused:       new Set(["pending",     "executing",   "failed",           "skipped"]),
 };
 
 // ── State → Phase mapping ─────────────────────────────────────
@@ -145,18 +145,15 @@ export class StateMachine {
 
   // ── Pause / resume ─────────────────────────────────────────
 
-  /**
-   * Transitions the task to "paused".
-   * The previous state is implicit from context (e.g. WebSocket events);
-   * on resume we conservatively return to "executing".
-   */
   pause(taskId: number): void {
-    this.transition(taskId, "paused");
+    const task = this.db.getTask(taskId);
+    if (!task) throw new Error(`StateMachine: task ${taskId} not found`);
+    this.transition(taskId, "paused", task.phase ?? undefined);
   }
 
-  /**
-   * Moves the task from "paused" back to "executing".
-   */
+  // Resume returns the task to "pending" while preserving its phase so the
+  // dispatcher re-runs executeTask, which then skips already-completed phases
+  // and resumes the active phase from the stored Claude session_id.
   resume(taskId: number): void {
     const task = this.db.getTask(taskId);
     if (!task) {
@@ -170,7 +167,7 @@ export class StateMachine {
       );
     }
 
-    this.transition(taskId, "executing");
+    this.transition(taskId, "pending", task.phase ?? undefined);
   }
 
   // ── Skip ───────────────────────────────────────────────────

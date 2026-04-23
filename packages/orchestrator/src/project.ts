@@ -390,7 +390,7 @@ interface StreamUsageTick {
   isSubagentStart?: boolean;
 }
 
-function parseSessionIdFromLine(line: string): string | null {
+export function parseSessionIdFromLine(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith("{")) return null;
   try {

@@ -96,6 +96,7 @@ export interface AgentRun {
   duration: number;
   startedAt: string;
   finishedAt: string | null;
+  sessionId: string | null;
 }
 
 export interface AgentRunRow {
@@ -109,6 +110,7 @@ export interface AgentRunRow {
   duration: number;
   started_at: string;
   finished_at: string | null;
+  session_id: string | null;
 }
 
 export interface TaskLog {
@@ -191,6 +193,7 @@ export interface ParsePlanMeta {
 export type WSEventFromServer =
   | { type: "task:state_change"; taskId: number; oldState: TaskState; newState: TaskState; title?: string }
   | { type: "task:log_append"; taskId: number; line: string }
+  | { type: "task:log_bulk"; taskId: number; lines: string[] }
   | { type: "task:agent_started"; taskId: number; phase: TaskPhase; model: string }
   | { type: "task:agent_finished"; taskId: number; phase: TaskPhase; tokens: number; cost: number; tokensIn: number; tokensOut: number; cacheRead: number; cacheCreation: number; model: string; contextLimit: number; contextPercentage: number }
   | { type: "task:init"; taskId: number; title: string; description: string; dependsOn: number[]; milestone: string | null; effort: TaskEffort | null }
