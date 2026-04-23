@@ -106,14 +106,13 @@ export default function DashboardPage() {
 
   const selectedLogs = useMemo(() => {
     if (selectedTaskId == null) {
-      // Merge all logs
-      const allLogs: string[] = [];
+      const all: Array<{ line: string; taskId: number }> = [];
       logs.forEach((lines, taskId) => {
-        lines.forEach((line) => allLogs.push(`[#${taskId}] ${line}`));
+        lines.forEach((line) => all.push({ line, taskId }));
       });
-      return allLogs;
+      return all;
     }
-    return logs.get(selectedTaskId) ?? [];
+    return (logs.get(selectedTaskId) ?? []).map((line) => ({ line }));
   }, [logs, selectedTaskId]);
 
   const taskCosts = useMemo(() => {
@@ -514,7 +513,7 @@ export default function DashboardPage() {
 
         <PanelResizeHandle style={{ width: 6, background: "var(--border)", cursor: "col-resize", opacity: 0.5 }} />
 
-        <Panel defaultSize={25} minSize={15} maxSize={50} style={{ overflow: "hidden" }}>
+        <Panel defaultSize={25} minSize={15} maxSize={50} style={{ overflow: "hidden", minWidth: 300 }}>
         {/* Sidebar */}
         <aside
           style={{
@@ -526,6 +525,7 @@ export default function DashboardPage() {
             gap: 16,
             overflowY: "auto",
             backgroundColor: "var(--bg-primary)",
+            minWidth: 0,
           }}
         >
           <CostPanel

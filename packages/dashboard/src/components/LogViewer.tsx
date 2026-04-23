@@ -2,14 +2,18 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+export type LogEntry = { line: string; taskId?: number };
+
 interface LogViewerProps {
-  logs: string[];
+  logs: LogEntry[];
   maxHeight?: number;
 }
 
 type FilterMode = "all" | "agent" | "tools";
 
-type ParsedEvent =
+type EventBase = { taskId?: number };
+
+type ParsedEvent = EventBase & (
   | { kind: "system"; raw: string; summary: string; data: any }
   | { kind: "result"; raw: string; summary: string; data: any }
   | { kind: "usage"; raw: string; summary: string; data: any }
@@ -26,23 +30,26 @@ type ParsedEvent =
     }
   | { kind: "tool-result-orphan"; raw: string; toolUseId: string; content: any; isError: boolean }
   | { kind: "unknown-json"; raw: string; data: any }
-  | { kind: "text"; raw: string };
+  | { kind: "text"; raw: string }
+);
 
-function classify(logs: string[]): ParsedEvent[] {
+function classify(logs: LogEntry[]): ParsedEvent[] {
   const events: ParsedEvent[] = [];
   const pairIndex = new Map<string, number>();
 
-  for (const raw of logs) {
+  for (const entry of logs) {
+    const raw = entry.line;
+    const taskId = entry.taskId;
     let parsed: any;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      events.push({ kind: "text", raw });
+      events.push({ kind: "text", raw, taskId });
       continue;
     }
 
     if (!parsed || typeof parsed !== "object") {
-      events.push({ kind: "unknown-json", raw, data: parsed });
+      events.push({ kind: "unknown-json", raw, data: parsed, taskId });
       continue;
     }
 
@@ -51,14 +58,14 @@ function classify(logs: string[]): ParsedEvent[] {
     if (t === "system") {
       const sub = parsed.subtype ?? "event";
       const model = parsed.model ? ` (${parsed.model})` : "";
-      events.push({ kind: "system", raw, summary: `system: ${sub}${model}`, data: parsed });
+      events.push({ kind: "system", raw, summary: `system: ${sub}${model}`, data: parsed, taskId });
       continue;
     }
 
     if (t === "result" || parsed.result !== undefined) {
       const txt = typeof parsed.result === "string" ? parsed.result : JSON.stringify(parsed.result ?? parsed);
       const trunc = txt.length > 140 ? txt.slice(0, 140) + "…" : txt;
-      events.push({ kind: "result", raw, summary: `result: ${trunc}`, data: parsed });
+      events.push({ kind: "result", raw, summary: `result: ${trunc}`, data: parsed, taskId });
       continue;
     }
 
@@ -66,7 +73,7 @@ function classify(logs: string[]): ParsedEvent[] {
       const content = parsed.message.content as any[];
       for (const item of content) {
         if (item?.type === "text" && typeof item.text === "string") {
-          events.push({ kind: "agent-text", raw, text: item.text });
+          events.push({ kind: "agent-text", raw, text: item.text, taskId });
         } else if (item?.type === "tool_use") {
           const id = item.id ?? `${events.length}`;
           const ev: ParsedEvent = {
@@ -75,6 +82,7 @@ function classify(logs: string[]): ParsedEvent[] {
             name: item.name ?? "tool",
             input: item.input ?? {},
             toolUseId: id,
+            taskId,
           };
           pairIndex.set(id, events.length);
           events.push(ev);
@@ -87,6 +95,7 @@ function classify(logs: string[]): ParsedEvent[] {
           raw,
           summary: `tokens: ${u.input_tokens ?? 0}in / ${u.output_tokens ?? 0}out (cached: ${u.cache_read_input_tokens ?? 0})`,
           data: u,
+          taskId,
         });
       }
       continue;
@@ -111,6 +120,7 @@ function classify(logs: string[]): ParsedEvent[] {
               toolUseId: id,
               content: item.content,
               isError,
+              taskId,
             });
           }
         }
@@ -125,11 +135,12 @@ function classify(logs: string[]): ParsedEvent[] {
         raw,
         summary: `tokens: ${u.input_tokens ?? 0}in / ${u.output_tokens ?? 0}out (cached: ${u.cache_read_input_tokens ?? 0})`,
         data: u,
+        taskId,
       });
       continue;
     }
 
-    events.push({ kind: "unknown-json", raw, data: parsed });
+    events.push({ kind: "unknown-json", raw, data: parsed, taskId });
   }
 
   return events;
@@ -418,6 +429,8 @@ function kindClass(e: ParsedEvent): string {
   if (e.kind === "system") return "k-system";
   if (e.kind === "result") return "k-text";
   if (e.kind === "usage") return "k-system";
+  if (e.kind === "text") return "k-plain";
+  if (e.kind === "unknown-json") return "k-unknown";
   return "k-system";
 }
 
@@ -555,6 +568,7 @@ function Row({ event, isOpen, onToggle }: { event: ParsedEvent; isOpen: boolean;
       <div className="lv-row-body">
         <div className="lv-row-head">
           <span className="chev"><Icon.Chev /></span>
+          {event.taskId != null && <span className="lv-task-chip">#{event.taskId}</span>}
           <span className="lv-row-kind">{labelFor(event)}</span>
           <span className="lv-row-summary">{summaryFor(event)}</span>
           {bits.length > 0 && <span className="lv-row-meta"><span className="pill">{bits.join(" · ")}</span></span>}
@@ -682,6 +696,22 @@ const STYLES = `
 .lv-row.k-tool.err .dot { border-color: rgba(217, 112, 112, 0.45); color: var(--lv-red); background: rgba(217,112,112,0.08); }
 .lv-row.k-text .dot { border-color: rgba(217, 119, 87, 0.40); color: var(--lv-accent); background: rgba(217, 119, 87, 0.06); }
 .lv-row.k-system .dot { border-color: var(--lv-border); color: var(--lv-text-faint); }
+.lv-row.k-plain .dot { border-color: var(--lv-border-soft); color: var(--lv-text-dim); background: rgba(255,255,255,0.015); }
+.lv-row.k-unknown .dot { border-color: rgba(217, 177, 90, 0.40); color: var(--lv-yellow); background: rgba(217, 177, 90, 0.06); }
+.lv-row.k-plain .lv-row-kind { color: var(--lv-text-dim); }
+.lv-row.k-unknown .lv-row-kind { color: var(--lv-yellow); }
+
+.lv-task-chip {
+  font-family: var(--lv-mono);
+  font-size: var(--lv-fs-tiny);
+  color: var(--lv-text-dim);
+  background: rgba(var(--lv-accent-rgb), 0.10);
+  border: 1px solid rgba(var(--lv-accent-rgb), 0.25);
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
 
 .lv-row-body { grid-column: 2; min-width: 0; }
 

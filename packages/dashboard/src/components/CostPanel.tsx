@@ -55,20 +55,20 @@ export default function CostPanel({ totalCost, tokensIn, tokensOut, cacheRead, c
           )}
         </div>
 
-        <div style={{ display: "flex", gap: 16 }}>
-          <div style={{ flex: 1 }}>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 90px", minWidth: 90 }}>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Tokens In</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)" }}>
               {formatTokenCount(tokensIn)}
             </div>
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: "1 1 90px", minWidth: 90 }}>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Tokens Out</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)" }}>
               {formatTokenCount(tokensOut)}
             </div>
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: "1 1 90px", minWidth: 90 }}>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Cached</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-secondary)" }}>
               {cacheRead && cacheRead > 0 ? formatTokenCount(cacheRead) : "\u2014"}

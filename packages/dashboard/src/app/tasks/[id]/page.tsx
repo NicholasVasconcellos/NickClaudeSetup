@@ -13,7 +13,10 @@ export default function TaskDetailPage() {
   const { connected, tasks, logs, costs } = useWebSocket("ws://localhost:3100");
 
   const task = tasks.get(taskId);
-  const taskLogs = useMemo(() => logs.get(taskId) ?? [], [logs, taskId]);
+  const taskLogs = useMemo(
+    () => (logs.get(taskId) ?? []).map((line) => ({ line })),
+    [logs, taskId]
+  );
 
   const stateColors: Record<string, string> = {
     pending: "#525252",
